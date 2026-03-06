@@ -2,7 +2,7 @@
   "name": "session-buffer",
   "description": "Three-layer session memory plugin for Claude Code",
   "owner": {
-    "name": "metafishTV"
+    "name": "metafish"
   },
   "plugins": [
     {
@@ -11,7 +11,7 @@
       "version": "0.1.0",
       "source": "./",
       "author": {
-        "name": "metafishTV"
+        "name": "metafish"
       }
     }
   ]
