@@ -1,0 +1,15 @@
+{
+  "name": "session-buffer",
+  "description": "Three-layer session memory plugin for Claude Code",
+  "owner": {
+    "name": "metafishTV"
+  },
+  "plugins": [
+    {
+      "name": "session-buffer",
+      "description": "Three-layer session buffer for cross-instance continuity. Preserves decisions, open threads, concept maps, and working context across Claude Code sessions.",
+      "version": "0.1.0",
+      "source": "./"
+    }
+  ]
+}
