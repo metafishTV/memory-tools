@@ -334,7 +334,14 @@ Context reconstructed from [date] handoff. Ready to continue from [current_phase
 Autosave armed — sigma trunk will stay current throughout the session.
 ```
 
-Ask: "Shall I proceed with [next_action or first open_thread], or do you have a different priority?"
+**MANDATORY**: You MUST present a priority check popup via AskUserQuestion before doing any work.
+Do NOT start working on the next action, even if you know what it is. The user decides what comes first.
+
+AskUserQuestion options:
+- Proceed with [next_action or first open_thread]
+- Different priority (let user specify)
+
+Even if the reconstructed context makes the next step obvious, **stop and ask**. The user may have a different priority today than when the last handoff was written.
 
 ---
 

@@ -83,11 +83,15 @@ Omit sections with no changes (e.g., skip `concept_map_changes` for tooling-only
 
 ## Mode Selection (FIRST)
 
-Present this choice to the user via AskUserQuestion:
+**MANDATORY**: You MUST present the mode selector popup via AskUserQuestion before proceeding.
+Do NOT default to Totalize. Do NOT infer the mode from context. The user chooses.
 
+AskUserQuestion options:
 - **Totalize** — Complete end-of-session handoff (all steps below)
 - **Quicksave** — Fast sigma trunk checkpoint (~3 tool calls)
 - **Targeted** — Save specific items the user names (~4 tool calls)
+
+**Wait for the user's selection before doing anything else.** Even if the session is ending and a full handoff seems obvious, the user may prefer a quicksave. Never assume.
 
 Then follow the selected mode. All modes begin with the **Shared Preamble**.
 
