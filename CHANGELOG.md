@@ -2,6 +2,13 @@
 
 All notable changes to buffer are documented here.
 
+## [0.1.5] - 2026-03-06
+
+### Changed
+- Plugin renamed from `session-buffer` to `buffer` (invocation: `/buffer:on`, `/buffer:off`)
+- Marketplace renamed from `session-buffer-marketplace` to `memory-tools-by-metafish`
+- Updated 57+ references across repo files, local skills, and plugin infrastructure
+
 ## [0.1.4] - 2026-03-06
 
 ### Fixed
