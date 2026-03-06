@@ -1,16 +1,30 @@
 {
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "session-buffer-marketplace",
+  "description": "Session buffer plugin for Claude Code cross-instance continuity",
   "owner": {
-    "name": "metafish"
+    "name": "metafish",
+    "url": "https://github.com/metafishTV"
+  },
+  "metadata": {
+    "description": "Three-layer session buffer for cross-instance continuity",
+    "version": "1.0.0",
+    "homepage": "https://github.com/metafishTV/session-buffer",
+    "license": "MIT",
+    "totalPlugins": 1,
+    "lastUpdated": "2026-03-06"
   },
   "plugins": [
     {
       "name": "session-buffer",
       "description": "Three-layer session buffer for cross-instance continuity. Preserves decisions, open threads, concept maps, and working context across Claude Code sessions.",
       "version": "0.1.0",
-      "source": "./",
+      "source": "./plugin",
+      "category": "productivity",
+      "keywords": ["session", "buffer", "memory", "context", "handoff", "continuity"],
       "author": {
-        "name": "metafish"
+        "name": "metafish",
+        "url": "https://github.com/metafishTV"
       }
     }
   ]
