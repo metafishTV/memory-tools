@@ -1,0 +1,1339 @@
+#!/usr/bin/env python3
+"""
+Session Buffer — Buffer Manager
+
+Mechanical operations for the three-layer session buffer (sigma trunk).
+Handles JSON merge, ID assignment, conservation enforcement, and MEMORY.md sync.
+
+Commands:
+  handoff  — Full pipeline: update + migrate + sync (preferred)
+  update   — Merge session alpha stash into hot+warm layers
+  migrate  — Conservation: hot→warm→cold when bounds exceeded
+  validate — Check layer sizes and schema
+  sync     — MEMORY.md status sync + project registry
+  read     — Parse hot layer, resolve warm pointers, output reconstruction
+  next-id  — Get next sequential ID for a layer
+
+Usage: run_python buffer_manager.py <command> [options]
+"""
+
+import sys
+import os
+import io
+import json
+import re
+import copy
+import argparse
+from pathlib import Path
+from datetime import date
+
+# Force UTF-8 stdout/stderr on Windows (buffer data may contain unicode)
+if sys.platform == 'win32':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+HOT_MAX_LINES = 200
+WARM_MAX_LINES_DEFAULT = 500
+COLD_MAX_LINES = 500
+SCHEMA_VERSION = 2
+
+# Scope mapping: legacy buffer_mode values to normalized scope values
+SCOPE_MAP = {
+    'project': 'full',
+    'memory': 'lite',
+    'minimal': 'lite',
+    'full': 'full',
+    'lite': 'lite',
+}
+
+
+# ---------------------------------------------------------------------------
+# Utilities
+# ---------------------------------------------------------------------------
+
+def read_json(path: str) -> dict:
+    """Read a JSON file, return empty dict if not found."""
+    p = Path(path)
+    if not p.exists():
+        return {}
+    try:
+        return json.loads(p.read_text(encoding='utf-8'))
+    except (json.JSONDecodeError, OSError) as e:
+        print(f"Warning: failed to read {path}: {e}", file=sys.stderr)
+        return {}
+
+
+def write_json(path: str, data: dict) -> None:
+    """Write data to a JSON file with consistent formatting."""
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(
+        json.dumps(data, indent=2, ensure_ascii=False) + '\n',
+        encoding='utf-8'
+    )
+
+
+def count_json_lines(data: dict) -> int:
+    """Count lines in the JSON serialization of data."""
+    return len(json.dumps(data, indent=2, ensure_ascii=False).split('\n'))
+
+
+def next_id_in_entries(entries: list, prefix: str) -> str:
+    """Find the next sequential ID for a prefix (w:, c:, cw:)."""
+    max_n = 0
+    pattern = re.compile(rf'^{re.escape(prefix)}(\d+)$')
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        entry_id = entry.get('id', '')
+        m = pattern.match(entry_id)
+        if m:
+            max_n = max(max_n, int(m.group(1)))
+    return f"{prefix}{max_n + 1}"
+
+
+def collect_all_entries(layer: dict, prefix: str) -> list:
+    """Collect all entries with a given ID prefix from a layer."""
+    entries = []
+
+    if prefix == 'w:':
+        # Warm: concept_map groups + convergence_web + decisions_archive + validation_log
+        concept_map = layer.get('concept_map', {})
+        for group_name, group_entries in concept_map.items():
+            if isinstance(group_entries, list):
+                entries.extend(group_entries)
+        cw = layer.get('convergence_web', {})
+        entries.extend(cw.get('entries', []))
+        entries.extend(layer.get('decisions_archive', []))
+        entries.extend(layer.get('validation_log', []))
+
+    elif prefix == 'c:':
+        # Cold: all sections
+        for key in ['archived_decisions', 'superseded_mappings', 'dialogue_trace']:
+            entries.extend(layer.get(key, []))
+
+    elif prefix == 'cw:':
+        # Convergence web only
+        cw = layer.get('convergence_web', {})
+        entries.extend(cw.get('entries', []))
+
+    return entries
+
+
+def resolve_see_refs(hot: dict, warm: dict, cold: dict) -> list:
+    """Collect all 'see' references from hot layer and resolve them."""
+    refs = set()
+
+    # Gather from decisions
+    for d in hot.get('recent_decisions', []):
+        for ref in d.get('see', []):
+            refs.add(ref)
+
+    # Gather from threads
+    for t in hot.get('open_threads', []):
+        for ref in t.get('see', []):
+            refs.add(ref)
+
+    # Gather from digests
+    digest = hot.get('concept_map_digest', {})
+    for change in digest.get('recent_changes', []):
+        refs.add(change.get('id', ''))
+    for flagged_id in digest.get('flagged', []):
+        refs.add(flagged_id)
+
+    cw_digest = hot.get('convergence_web_digest', {})
+    for flagged_id in cw_digest.get('flagged', []):
+        refs.add(flagged_id)
+
+    refs.discard('')
+
+    # Resolve each ref
+    resolved = []
+    warm_entries = collect_all_entries(warm, 'w:')
+    cold_entries = collect_all_entries(cold, 'c:')
+    cw_entries = warm.get('convergence_web', {}).get('entries', [])
+
+    for ref_id in sorted(refs):
+        entry = None
+        source = None
+
+        # Check warm
+        for e in warm_entries:
+            if e.get('id') == ref_id:
+                # Check for tombstone/redirect
+                if 'migrated_to' in e:
+                    # Follow redirect to cold
+                    cold_id = e['migrated_to']
+                    for ce in cold_entries:
+                        if ce.get('id') == cold_id:
+                            entry = ce
+                            source = f"cold (via redirect from {ref_id})"
+                            break
+                    if not entry:
+                        entry = e
+                        source = "warm (redirect — target not found in cold)"
+                else:
+                    entry = e
+                    source = "warm"
+                break
+
+        # Check convergence web
+        if not entry:
+            for e in cw_entries:
+                if e.get('id') == ref_id:
+                    entry = e
+                    source = "convergence_web"
+                    break
+
+        # Check cold
+        if not entry:
+            for e in cold_entries:
+                if e.get('id') == ref_id:
+                    if 'archived_to' in e:
+                        entry = e
+                        source = f"cold (archived to tower-{e['archived_to']})"
+                    else:
+                        entry = e
+                        source = "cold"
+                    break
+
+        if entry:
+            resolved.append({'ref': ref_id, 'source': source, 'entry': entry})
+        else:
+            resolved.append({'ref': ref_id, 'source': 'NOT FOUND', 'entry': None})
+
+    return resolved
+
+
+def resolve_scope(buffer_mode: str) -> str:
+    """Map a buffer_mode value to a normalized scope ('full' or 'lite')."""
+    return SCOPE_MAP.get(buffer_mode, 'lite')
+
+
+# ---------------------------------------------------------------------------
+# Subcommand: read
+# ---------------------------------------------------------------------------
+
+def format_section(title: str, content: str) -> str:
+    """Format a section with a title."""
+    return f"\n--- {title} ---\n{content}"
+
+
+def cmd_read(args):
+    """Reconstruct context from buffer layers. Output to stdout."""
+    buf_dir = Path(args.buffer_dir)
+    hot = read_json(buf_dir / 'handoff.json')
+    warm = read_json(buf_dir / 'handoff-warm.json')
+    cold = read_json(buf_dir / 'handoff-cold.json')
+
+    if not hot:
+        print("No buffer found.", file=sys.stderr)
+        sys.exit(1)
+
+    mode = hot.get('buffer_mode', 'unknown')
+    out = []
+
+    # Header
+    out.append("=== BUFFER RECONSTRUCTION ===")
+    out.append(f"Mode: {mode} | Schema: v{hot.get('schema_version', '?')}")
+    out.append(f"Sessions since full scan: {hot.get('sessions_since_full_scan', '?')}"
+               f"/{hot.get('full_scan_threshold', '?')}")
+
+    # Session meta
+    meta = hot.get('session_meta', {})
+    out.append(format_section("Session", '\n'.join([
+        f"Date: {meta.get('date', '?')}",
+        f"Commit: {meta.get('commit', '?')} ({meta.get('branch', '?')})",
+        f"Tests: {meta.get('tests', '?')}",
+        f"Files: {', '.join(meta.get('files_modified', [])[:10])}"
+        + (" ..." if len(meta.get('files_modified', [])) > 10 else ""),
+    ])))
+
+    # Active work (memory + project modes)
+    if mode in ('memory', 'project', 'unknown'):
+        aw = hot.get('active_work', {})
+        if aw:
+            lines = [f"Phase: {aw.get('current_phase', '?')}"]
+            for item in aw.get('completed_this_session', []):
+                lines.append(f"  done: {item}")
+            if aw.get('in_progress'):
+                lines.append(f"In progress: {aw['in_progress']}")
+            if aw.get('blocked_by'):
+                lines.append(f"BLOCKED: {aw['blocked_by']}")
+            if aw.get('next_action'):
+                lines.append(f"Next: {aw['next_action']}")
+            out.append(format_section("Active Work", '\n'.join(lines)))
+
+    # Orientation
+    ori = hot.get('orientation', {})
+    if ori:
+        lines = [f"Core: {ori.get('core_insight', '')}"]
+        if ori.get('practical_warning'):
+            lines.append(f"Warning: {ori['practical_warning']}")
+        for k, v in ori.get('why_keys', {}).items():
+            lines.append(f"  {k}: {v}")
+        out.append(format_section("Orientation", '\n'.join(lines)))
+
+    # Open threads (memory + project modes)
+    if mode in ('memory', 'project', 'unknown'):
+        threads = hot.get('open_threads', [])
+        if threads:
+            lines = []
+            for i, t in enumerate(threads, 1):
+                ref = f" -> {t['ref']}" if t.get('ref') else ""
+                see = f" [see: {', '.join(t['see'])}]" if t.get('see') else ""
+                lines.append(f"{i}. [{t.get('status', '?')}] {t.get('thread', '')}{ref}{see}")
+            out.append(format_section(f"Open Threads ({len(threads)})", '\n'.join(lines)))
+
+    # Recent decisions (memory + project modes)
+    if mode in ('memory', 'project', 'unknown'):
+        decs = hot.get('recent_decisions', [])
+        if decs:
+            lines = []
+            for i, d in enumerate(decs, 1):
+                see = f" [see: {', '.join(d['see'])}]" if d.get('see') else ""
+                lines.append(f"{i}. {d.get('what', '?')} -> {d.get('chose', '?')} | {d.get('why', '')}{see}")
+            out.append(format_section(f"Recent Decisions ({len(decs)})", '\n'.join(lines)))
+
+    # Instance notes (memory + project modes)
+    if mode in ('memory', 'project', 'unknown'):
+        notes = hot.get('instance_notes', {})
+        if notes:
+            lines = [f"From: {notes.get('from', '?')}"]
+            lines.append("Remarks:")
+            for r in notes.get('remarks', []):
+                lines.append(f"  * {r}")
+            if notes.get('open_questions'):
+                lines.append("Open Questions:")
+                for q in notes.get('open_questions', []):
+                    lines.append(f"  ? {q}")
+            out.append(format_section("Instance Notes", '\n'.join(lines)))
+
+    # Concept map digest (project mode)
+    if mode in ('project', 'unknown'):
+        cmd = hot.get('concept_map_digest', {})
+        if cmd:
+            meta_cm = cmd.get('_meta', {})
+            lines = [
+                f"Total: {meta_cm.get('total_entries', '?')} entries "
+                f"(last validated: {meta_cm.get('last_validated', '?')})"
+            ]
+            recent = cmd.get('recent_changes', [])
+            if recent:
+                lines.append(f"Recent changes ({len(recent)}):")
+                for r in recent[:20]:
+                    lines.append(f"  {r.get('id', '?')} | {r.get('key', '?')} | {r.get('status', '?')}")
+                if len(recent) > 20:
+                    lines.append(f"  ... and {len(recent) - 20} more")
+            flagged = cmd.get('flagged', [])
+            if flagged:
+                lines.append(f"FLAGGED: {', '.join(flagged)}")
+            out.append(format_section("Concept Map Digest", '\n'.join(lines)))
+
+    # Convergence web digest (project mode)
+    if mode in ('project', 'unknown'):
+        cwd = hot.get('convergence_web_digest', {})
+        if cwd:
+            meta_cw = cwd.get('_meta', {})
+            lines = [
+                f"Total: {meta_cw.get('total_entries', '?')} entries"
+            ]
+            clusters = cwd.get('clusters', [])
+            if clusters:
+                lines.append(f"Clusters ({len(clusters)}):")
+                for c in clusters:
+                    lines.append(f"  * {c}")
+            flagged = cwd.get('flagged', [])
+            if flagged:
+                lines.append(f"FLAGGED: {', '.join(flagged)}")
+            else:
+                lines.append("Flagged: none")
+            out.append(format_section("Convergence Web Digest", '\n'.join(lines)))
+
+    # Memory config
+    mc = hot.get('memory_config', {})
+    if mc:
+        out.append(format_section("Memory Config", '\n'.join([
+            f"Integration: {mc.get('integration', '?')}",
+            f"Path: {mc.get('path', '?')}",
+        ])))
+
+    # Natural summary
+    ns = hot.get('natural_summary', '')
+    if ns:
+        out.append(format_section("Natural Summary", ns))
+
+    # Resolve pointers
+    resolved = resolve_see_refs(hot, warm, cold)
+    if resolved:
+        lines = []
+        for r in resolved:
+            entry = r['entry']
+            if entry is None:
+                lines.append(f"{r['ref']} | {r['source']}")
+            elif 'archived_to' in entry:
+                lines.append(f"{r['ref']} | ARCHIVED to tower-{entry['archived_to']}"
+                             f" | was: {entry.get('was', '?')}")
+            elif 'migrated_to' in entry:
+                lines.append(f"{r['ref']} | REDIRECT -> {entry['migrated_to']}")
+            else:
+                key = entry.get('key', entry.get('what', entry.get('thread', '?')))
+                maps_to = entry.get('maps_to', '')
+                suggest = entry.get('suggest', '')
+                extra = []
+                if maps_to:
+                    extra.append(f"maps_to={maps_to}")
+                if suggest:
+                    extra.append(f"suggest={suggest}")
+                extra_str = f" | {', '.join(extra)}" if extra else ""
+                lines.append(f"{r['ref']} [{r['source']}] | {key}{extra_str}")
+        out.append(format_section("Warm Pointers Resolved", '\n'.join(lines)))
+
+    # Layer sizes
+    warm_max = args.warm_max if hasattr(args, 'warm_max') and args.warm_max else WARM_MAX_LINES_DEFAULT
+    hot_lines = count_json_lines(hot)
+    warm_lines = count_json_lines(warm) if warm else 0
+    cold_lines = count_json_lines(cold) if cold else 0
+
+    size_lines = [
+        f"Hot:  {hot_lines} lines (max {HOT_MAX_LINES})"
+        + (" *** OVER ***" if hot_lines > HOT_MAX_LINES else ""),
+        f"Warm: {warm_lines} lines (max {warm_max})"
+        + (" *** OVER ***" if warm_lines > warm_max else ""),
+        f"Cold: {cold_lines} lines (max {COLD_MAX_LINES})"
+        + (" *** OVER ***" if cold_lines > COLD_MAX_LINES else ""),
+    ]
+    out.append(format_section("Layer Sizes", '\n'.join(size_lines)))
+
+    print('\n'.join(out))
+
+
+# ---------------------------------------------------------------------------
+# Subcommand: update — merge alpha stash into sigma trunk
+# ---------------------------------------------------------------------------
+
+def cmd_update(args):
+    """Merge session alpha stash (changes) into buffer layers."""
+    buf_dir = Path(args.buffer_dir)
+    hot_path = buf_dir / 'handoff.json'
+    warm_path = buf_dir / 'handoff-warm.json'
+
+    hot = read_json(hot_path)
+    warm = read_json(warm_path)
+
+    if not hot:
+        print("Error: no hot layer found. Initialize the buffer first.", file=sys.stderr)
+        sys.exit(1)
+
+    # Read changes (alpha stash) — prefer file input over stdin (Windows compat)
+    if args.input:
+        changes = read_json(args.input)
+    else:
+        try:
+            changes = json.loads(sys.stdin.read())
+        except json.JSONDecodeError as e:
+            print(f"Error: invalid JSON input: {e}", file=sys.stderr)
+            sys.exit(1)
+
+    if not changes:
+        print("Error: empty changes.", file=sys.stderr)
+        sys.exit(1)
+
+    mode = hot.get('buffer_mode', 'minimal')
+    report = []
+
+    # --- Hot layer updates ---
+
+    # Session meta (always)
+    if 'session_meta' in changes:
+        hot['session_meta'] = changes['session_meta']
+        report.append("Updated session_meta")
+
+    # Active work (memory + project)
+    if mode in ('memory', 'project') and 'active_work' in changes:
+        hot['active_work'] = changes['active_work']
+        report.append("Updated active_work")
+
+    # New decisions -> append to recent_decisions (memory + project)
+    if mode in ('memory', 'project') and 'new_decisions' in changes:
+        if 'recent_decisions' not in hot:
+            hot['recent_decisions'] = []
+        for d in changes['new_decisions']:
+            d.setdefault('session', str(date.today()))
+            d.setdefault('see', [])
+            hot['recent_decisions'].append(d)
+        report.append(f"Added {len(changes['new_decisions'])} decisions")
+
+    # Open threads — replace entirely (memory + project)
+    if mode in ('memory', 'project') and 'open_threads' in changes:
+        hot['open_threads'] = changes['open_threads']
+        report.append(f"Set {len(changes['open_threads'])} open threads")
+
+    # Instance notes — replace entirely (memory + project)
+    if mode in ('memory', 'project') and 'instance_notes' in changes:
+        hot['instance_notes'] = changes['instance_notes']
+        report.append("Updated instance_notes")
+
+    # Natural summary (always)
+    if 'natural_summary' in changes:
+        hot['natural_summary'] = changes['natural_summary']
+        report.append("Updated natural_summary")
+
+    # Orientation updates (rare, but supported)
+    if 'orientation' in changes:
+        hot['orientation'] = changes['orientation']
+        report.append("Updated orientation")
+
+    # --- Warm layer updates (project mode) ---
+
+    if mode == 'project' and warm:
+        # Concept map changes
+        if 'concept_map_changes' in changes:
+            concept_map = warm.get('concept_map', {})
+            all_warm_entries = collect_all_entries(warm, 'w:')
+            digest_recent = hot.get('concept_map_digest', {}).get('recent_changes', [])
+            digest_flagged = hot.get('concept_map_digest', {}).get('flagged', [])
+            added = 0
+            updated = 0
+
+            for change in changes['concept_map_changes']:
+                action = change.get('action', '')
+
+                if action == 'add':
+                    group = change.get('group', 'cross_source')
+                    entry = change.get('entry', {})
+                    new_id = next_id_in_entries(all_warm_entries, 'w:')
+                    entry['id'] = new_id
+                    if group not in concept_map:
+                        concept_map[group] = []
+                    concept_map[group].append(entry)
+                    all_warm_entries.append(entry)
+                    digest_recent.append({
+                        'id': new_id,
+                        'key': entry.get('key', '?'),
+                        'status': 'NEW'
+                    })
+                    added += 1
+
+                elif action == 'update':
+                    target_id = change.get('id', '')
+                    changes_to_apply = change.get('changes', {})
+                    for group_name, group_entries in concept_map.items():
+                        if isinstance(group_entries, list):
+                            for e in group_entries:
+                                if e.get('id') == target_id:
+                                    e.update(changes_to_apply)
+                                    digest_recent.append({
+                                        'id': target_id,
+                                        'key': e.get('key', '?'),
+                                        'status': 'CHANGED'
+                                    })
+                                    updated += 1
+                                    break
+
+                elif action == 'flag':
+                    flag_id = change.get('id', '')
+                    if flag_id and flag_id not in digest_flagged:
+                        digest_flagged.append(flag_id)
+
+                elif action == 'promote':
+                    target_id = change.get('id', '')
+                    for group_name, group_entries in concept_map.items():
+                        if isinstance(group_entries, list):
+                            for e in group_entries:
+                                if e.get('id') == target_id:
+                                    if e.get('suggest'):
+                                        e['equiv'] = e.pop('suggest')
+                                        digest_recent.append({
+                                            'id': target_id,
+                                            'key': e.get('key', '?'),
+                                            'status': 'PROMOTED'
+                                        })
+                                    break
+
+            warm['concept_map'] = concept_map
+
+            # Update digest
+            if 'concept_map_digest' not in hot:
+                hot['concept_map_digest'] = {'_meta': {}, 'recent_changes': [], 'flagged': []}
+            hot['concept_map_digest']['recent_changes'] = digest_recent
+            hot['concept_map_digest']['flagged'] = digest_flagged
+            total = sum(len(g) for g in concept_map.values() if isinstance(g, list))
+            hot['concept_map_digest']['_meta']['total_entries'] = total
+            hot['concept_map_digest']['_meta']['last_validated'] = str(date.today())
+
+            if added or updated:
+                report.append(f"Concept map: {added} added, {updated} updated")
+
+        # Convergence web changes
+        if 'convergence_web_changes' in changes:
+            cw = warm.get('convergence_web', {'_meta': {}, 'entries': []})
+            cw_entries = cw.get('entries', [])
+            cw_added = 0
+
+            for change in changes['convergence_web_changes']:
+                action = change.get('action', '')
+
+                if action == 'add':
+                    entry = change.get('entry', {})
+                    new_id = next_id_in_entries(cw_entries, 'cw:')
+                    entry['id'] = new_id
+                    cw_entries.append(entry)
+                    cw_added += 1
+
+                elif action == 'update':
+                    target_id = change.get('id', '')
+                    changes_to_apply = change.get('changes', {})
+                    for e in cw_entries:
+                        if e.get('id') == target_id:
+                            e.update(changes_to_apply)
+                            break
+
+            cw['entries'] = cw_entries
+            cw['_meta']['total_entries'] = len(cw_entries)
+            cw['_meta']['last_validated'] = str(date.today())
+            warm['convergence_web'] = cw
+
+            # Update hot digest
+            if 'convergence_web_digest' not in hot:
+                hot['convergence_web_digest'] = {'_meta': {}, 'clusters': [], 'flagged': []}
+            hot['convergence_web_digest']['_meta']['total_entries'] = len(cw_entries)
+            hot['convergence_web_digest']['_meta']['last_validated'] = str(date.today())
+
+            if cw_added:
+                report.append(f"Convergence web: {cw_added} added")
+
+        # Validation log entries
+        if 'validation_log_entries' in changes:
+            if 'validation_log' not in warm:
+                warm['validation_log'] = []
+            warm['validation_log'].extend(changes['validation_log_entries'])
+            report.append(f"Validation log: {len(changes['validation_log_entries'])} entries added")
+
+    # --- Minimal mode: session summary tracking ---
+    if mode == 'minimal' and 'natural_summary' in changes:
+        # In minimal mode, warm layer holds session_summaries
+        if not warm:
+            warm = {'schema_version': 2, 'layer': 'warm', 'session_summaries': []}
+        summaries = warm.get('session_summaries', [])
+        summaries.append({
+            'date': changes.get('session_meta', {}).get('date', str(date.today())),
+            'commit': changes.get('session_meta', {}).get('commit', '?'),
+            'summary': changes['natural_summary']
+        })
+        warm['session_summaries'] = summaries
+        report.append("Added session summary to warm")
+
+    # --- Increment full scan counter ---
+    hot['sessions_since_full_scan'] = hot.get('sessions_since_full_scan', 0) + 1
+
+    # --- Write ---
+    write_json(hot_path, hot)
+    report.append(f"Wrote hot layer ({count_json_lines(hot)} lines)")
+
+    if warm:
+        write_json(warm_path, warm)
+        report.append(f"Wrote warm layer ({count_json_lines(warm)} lines)")
+
+    print("Update complete:", file=sys.stderr)
+    for r in report:
+        print(f"  {r}", file=sys.stderr)
+
+    # Output summary as JSON for the LLM to confirm
+    result = {
+        'status': 'ok',
+        'hot_lines': count_json_lines(hot),
+        'warm_lines': count_json_lines(warm) if warm else 0,
+        'actions': report
+    }
+    print(json.dumps(result, indent=2))
+
+
+# ---------------------------------------------------------------------------
+# Subcommand: migrate
+# ---------------------------------------------------------------------------
+
+def cmd_migrate(args):
+    """Conservation enforcement — migrate entries between layers."""
+    buf_dir = Path(args.buffer_dir)
+    warm_max = args.warm_max or WARM_MAX_LINES_DEFAULT
+
+    hot = read_json(buf_dir / 'handoff.json')
+    warm = read_json(buf_dir / 'handoff-warm.json')
+    cold = read_json(buf_dir / 'handoff-cold.json')
+
+    if not hot:
+        print("Error: no hot layer found.", file=sys.stderr)
+        sys.exit(1)
+
+    mode = hot.get('buffer_mode', 'minimal')
+    report = []
+    modified = {'hot': False, 'warm': False, 'cold': False}
+
+    # --- Hot -> Warm migration ---
+    hot_lines = count_json_lines(hot)
+    if hot_lines > HOT_MAX_LINES and mode in ('memory', 'project'):
+        # Move oldest decisions to warm decisions_archive
+        decisions = hot.get('recent_decisions', [])
+        if len(decisions) > 2:
+            to_migrate = decisions[:-2]  # Keep last 2
+            hot['recent_decisions'] = decisions[-2:]
+
+            if 'decisions_archive' not in warm:
+                warm['decisions_archive'] = []
+            warm['decisions_archive'].extend(to_migrate)
+            report.append(f"Hot->Warm: migrated {len(to_migrate)} decisions")
+            modified['hot'] = True
+            modified['warm'] = True
+
+        # Remove resolved threads
+        threads = hot.get('open_threads', [])
+        resolved = [t for t in threads if t.get('status') == 'resolved']
+        if resolved:
+            hot['open_threads'] = [t for t in threads if t.get('status') != 'resolved']
+            report.append(f"Hot: removed {len(resolved)} resolved threads")
+            modified['hot'] = True
+
+    # --- Warm -> Cold migration ---
+    warm_lines = count_json_lines(warm) if warm else 0
+    if warm_lines > warm_max and mode in ('memory', 'project'):
+        # Migrate oldest decisions_archive entries
+        archive = warm.get('decisions_archive', [])
+        if len(archive) > 5:
+            to_migrate = archive[:len(archive) - 5]
+            warm['decisions_archive'] = archive[len(archive) - 5:]
+
+            if not cold:
+                cold = {'schema_version': 2, 'layer': 'cold', 'archived_decisions': [],
+                        'superseded_mappings': [], 'dialogue_trace': []}
+            if 'archived_decisions' not in cold:
+                cold['archived_decisions'] = []
+
+            cold_entries = collect_all_entries(cold, 'c:')
+            for entry in to_migrate:
+                new_id = next_id_in_entries(cold_entries, 'c:')
+                old_id = entry.get('id', entry.get('what', '?'))
+                cold_entry = copy.deepcopy(entry)
+                cold_entry['id'] = new_id
+                cold_entry['migrated_from_warm'] = str(date.today())
+                cold['archived_decisions'].append(cold_entry)
+                cold_entries.append(cold_entry)
+
+            report.append(f"Warm->Cold: migrated {len(to_migrate)} decisions")
+            modified['warm'] = True
+            modified['cold'] = True
+
+        # Migrate oldest validation_log entries
+        vlog = warm.get('validation_log', [])
+        if len(vlog) > 20:
+            to_migrate = vlog[:len(vlog) - 20]
+            warm['validation_log'] = vlog[len(vlog) - 20:]
+            # Validation log entries go to cold without redirect (low-value)
+            report.append(f"Warm->Cold: trimmed {len(to_migrate)} validation_log entries")
+            modified['warm'] = True
+
+    # --- Minimal mode: compress session summaries ---
+    if mode == 'minimal' and warm:
+        summaries = warm.get('session_summaries', [])
+        warm_lines = count_json_lines(warm)
+        if warm_lines > WARM_MAX_LINES_DEFAULT and len(summaries) > 5:
+            # Compress oldest 30% by merging adjacent summaries
+            n_compress = max(2, len(summaries) * 30 // 100)
+            to_compress = summaries[:n_compress]
+            merged_summary = ' | '.join(
+                f"[{s.get('date', '?')}] {s.get('summary', '')[:80]}"
+                for s in to_compress
+            )
+            compressed = {
+                'date': f"{to_compress[0].get('date', '?')}..{to_compress[-1].get('date', '?')}",
+                'commit': to_compress[-1].get('commit', '?'),
+                'summary': f"[compressed {n_compress} sessions] {merged_summary}"
+            }
+            warm['session_summaries'] = [compressed] + summaries[n_compress:]
+            report.append(f"Minimal: compressed {n_compress} session summaries")
+            modified['warm'] = True
+
+    # --- Cold overflow detection ---
+    cold_lines = count_json_lines(cold) if cold else 0
+    if cold_lines > COLD_MAX_LINES:
+        report.append(f"WARNING: Cold layer at {cold_lines} lines (max {COLD_MAX_LINES}). "
+                      f"Run 'archive' subcommand to create tower file.")
+
+    # --- Write modified layers ---
+    if modified['hot'] or args.dry_run:
+        if not args.dry_run:
+            write_json(buf_dir / 'handoff.json', hot)
+    if modified['warm'] or args.dry_run:
+        if not args.dry_run:
+            write_json(buf_dir / 'handoff-warm.json', warm)
+    if modified['cold'] or args.dry_run:
+        if not args.dry_run:
+            write_json(buf_dir / 'handoff-cold.json', cold)
+
+    # Report
+    if not report:
+        report.append("All layers within bounds. No migration needed.")
+
+    prefix = "[DRY RUN] " if args.dry_run else ""
+    print(f"{prefix}Migration report:", file=sys.stderr)
+    for r in report:
+        print(f"  {r}", file=sys.stderr)
+
+    result = {
+        'status': 'ok',
+        'hot_lines': count_json_lines(hot),
+        'warm_lines': count_json_lines(warm) if warm else 0,
+        'cold_lines': cold_lines,
+        'actions': report,
+        'dry_run': args.dry_run
+    }
+    print(json.dumps(result, indent=2))
+
+
+# ---------------------------------------------------------------------------
+# Subcommand: validate
+# ---------------------------------------------------------------------------
+
+def cmd_validate(args):
+    """Check layers against size and schema constraints."""
+    buf_dir = Path(args.buffer_dir)
+    warm_max = args.warm_max or WARM_MAX_LINES_DEFAULT
+
+    hot = read_json(buf_dir / 'handoff.json')
+    warm = read_json(buf_dir / 'handoff-warm.json')
+    cold = read_json(buf_dir / 'handoff-cold.json')
+
+    issues = []
+    info = []
+
+    if not hot:
+        issues.append("CRITICAL: No hot layer (handoff.json) found")
+        print(json.dumps({'status': 'error', 'issues': issues, 'info': info}))
+        sys.exit(1)
+
+    mode = hot.get('buffer_mode', 'unknown')
+    info.append(f"Buffer mode: {mode}")
+    info.append(f"Schema version: {hot.get('schema_version', 'missing')}")
+
+    # Schema version
+    if hot.get('schema_version', 0) < SCHEMA_VERSION:
+        issues.append(f"Schema version {hot.get('schema_version')} < {SCHEMA_VERSION}. Migration needed.")
+
+    # Size checks
+    hot_lines = count_json_lines(hot)
+    warm_lines = count_json_lines(warm) if warm else 0
+    cold_lines = count_json_lines(cold) if cold else 0
+
+    info.append(f"Hot: {hot_lines}/{HOT_MAX_LINES} lines")
+    info.append(f"Warm: {warm_lines}/{warm_max} lines")
+    info.append(f"Cold: {cold_lines}/{COLD_MAX_LINES} lines")
+
+    if hot_lines > HOT_MAX_LINES:
+        issues.append(f"Hot layer over limit: {hot_lines} > {HOT_MAX_LINES}")
+    if warm_lines > warm_max:
+        issues.append(f"Warm layer over limit: {warm_lines} > {warm_max}")
+    if cold_lines > COLD_MAX_LINES:
+        issues.append(f"Cold layer over limit: {cold_lines} > {COLD_MAX_LINES}")
+
+    # Required fields
+    required_hot = ['session_meta', 'natural_summary', 'memory_config']
+    if mode in ('memory', 'project'):
+        required_hot.extend(['active_work', 'open_threads', 'recent_decisions', 'instance_notes'])
+    if mode == 'project':
+        required_hot.extend(['concept_map_digest', 'convergence_web_digest'])
+
+    for field in required_hot:
+        if field not in hot:
+            issues.append(f"Missing required hot field: {field}")
+
+    # Pointer integrity (project mode)
+    if mode == 'project' and warm:
+        all_warm_ids = {e.get('id') for e in collect_all_entries(warm, 'w:') if e.get('id')}
+        cw_ids = {e.get('id') for e in warm.get('convergence_web', {}).get('entries', []) if e.get('id')}
+        all_ids = all_warm_ids | cw_ids
+
+        # Check hot see-refs
+        broken_refs = []
+        for d in hot.get('recent_decisions', []):
+            for ref in d.get('see', []):
+                if ref not in all_ids:
+                    broken_refs.append(ref)
+        for t in hot.get('open_threads', []):
+            for ref in t.get('see', []):
+                if ref not in all_ids:
+                    broken_refs.append(ref)
+
+        if broken_refs:
+            issues.append(f"Broken see-refs: {', '.join(broken_refs)}")
+
+    # Full scan threshold
+    sfs = hot.get('sessions_since_full_scan', 0)
+    threshold = hot.get('full_scan_threshold', 5)
+    if sfs >= threshold:
+        issues.append(f"Full scan due: {sfs} sessions since last scan (threshold: {threshold})")
+
+    result = {
+        'status': 'ok' if not issues else 'issues_found',
+        'issues': issues,
+        'info': info,
+        'layer_sizes': {
+            'hot': hot_lines,
+            'warm': warm_lines,
+            'cold': cold_lines
+        }
+    }
+    print(json.dumps(result, indent=2))
+
+    if issues:
+        print(f"\n{len(issues)} issue(s) found:", file=sys.stderr)
+        for i in issues:
+            print(f"  ! {i}", file=sys.stderr)
+    else:
+        print("All checks passed.", file=sys.stderr)
+
+
+# ---------------------------------------------------------------------------
+# Subcommand: sync — MEMORY.md status + project registry
+# ---------------------------------------------------------------------------
+
+def cmd_sync(args):
+    """Sync MEMORY.md status + global project registry."""
+    buf_dir = Path(args.buffer_dir)
+    hot = read_json(buf_dir / 'handoff.json')
+
+    if not hot:
+        print("Error: no hot layer found.", file=sys.stderr)
+        sys.exit(1)
+
+    report = []
+
+    # --- MEMORY.md sync ---
+    mc = hot.get('memory_config', {})
+    integration = mc.get('integration', 'none')
+    memory_path = args.memory_path or mc.get('path', '')
+
+    if integration != 'none' and memory_path and os.path.exists(memory_path):
+        try:
+            content = Path(memory_path).read_text(encoding='utf-8')
+            lines = content.split('\n')
+            new_lines = []
+            in_status = False
+            status_updated = False
+
+            # Build status line
+            aw = hot.get('active_work', {})
+            status_text = (
+                f"**Status**: {aw.get('current_phase', 'Unknown')}. "
+                f"Next: {aw.get('next_action', 'TBD')}."
+            )
+
+            for line in lines:
+                if line.strip().startswith('## Status'):
+                    in_status = True
+                    new_lines.append(line)
+                    continue
+
+                if in_status:
+                    if line.strip().startswith('##'):
+                        # Next section — insert status before it
+                        new_lines.append(status_text)
+                        new_lines.append('')
+                        in_status = False
+                        new_lines.append(line)
+                        status_updated = True
+                    elif line.strip().startswith('**Status**'):
+                        new_lines.append(status_text)
+                        status_updated = True
+                        in_status = False
+                    else:
+                        # Skip old status content
+                        continue
+                else:
+                    new_lines.append(line)
+
+            # Handle case where ## Status is last section
+            if in_status and not status_updated:
+                new_lines.append(status_text)
+                new_lines.append('')
+                status_updated = True
+
+            # If no ## Status section found, add one before ## Buffer Integration
+            if not status_updated:
+                final_lines = []
+                inserted = False
+                for line in new_lines:
+                    if line.strip().startswith('## Buffer Integration') and not inserted:
+                        final_lines.append('## Status')
+                        final_lines.append(status_text)
+                        final_lines.append('')
+                        inserted = True
+                    final_lines.append(line)
+                if not inserted:
+                    final_lines.append('')
+                    final_lines.append('## Status')
+                    final_lines.append(status_text)
+                new_lines = final_lines
+
+            Path(memory_path).write_text('\n'.join(new_lines), encoding='utf-8')
+            report.append(f"MEMORY.md status updated: {status_text[:60]}...")
+        except OSError as e:
+            report.append(f"Warning: MEMORY.md sync failed: {e}")
+    elif integration == 'none':
+        report.append("MEMORY.md sync skipped (integration=none)")
+    else:
+        report.append(f"MEMORY.md not found at {memory_path}")
+
+    # --- Global project registry ---
+    registry_path = args.registry_path or os.path.expanduser('~/.claude/buffer/projects.json')
+    registry = read_json(registry_path)
+    if not registry:
+        registry = {'schema_version': 1, 'projects': {}}
+
+    # Determine project name
+    project_name = args.project_name
+    if not project_name:
+        # Infer from buffer directory
+        buf_abs = Path(buf_dir).resolve()
+        project_name = buf_abs.parent.parent.name  # .claude/buffer/ -> parent.parent = repo root
+
+    # Determine scope from buffer_mode
+    buffer_mode = hot.get('buffer_mode', 'minimal')
+    scope = resolve_scope(buffer_mode)
+
+    ori = hot.get('orientation', {})
+    registry['projects'][project_name] = {
+        'buffer_path': str(Path(buf_dir).resolve()),
+        'scope': scope,
+        'last_handoff': str(date.today()),
+        'project_context': ori.get('core_insight', '')[:120],
+        'remote_backup': False
+    }
+
+    Path(registry_path).parent.mkdir(parents=True, exist_ok=True)
+    write_json(registry_path, registry)
+    report.append(f"Registry updated: {project_name} (scope={scope})")
+
+    print("Sync complete:", file=sys.stderr)
+    for r in report:
+        print(f"  {r}", file=sys.stderr)
+
+    print(json.dumps({'status': 'ok', 'actions': report}, indent=2))
+
+
+# ---------------------------------------------------------------------------
+# Subcommand: next-id
+# ---------------------------------------------------------------------------
+
+def cmd_next_id(args):
+    """Get the next available ID for a layer."""
+    buf_dir = Path(args.buffer_dir)
+    layer_name = args.layer
+
+    if layer_name == 'warm':
+        warm = read_json(buf_dir / 'handoff-warm.json')
+        entries = collect_all_entries(warm, 'w:')
+        print(next_id_in_entries(entries, 'w:'))
+    elif layer_name == 'cold':
+        cold = read_json(buf_dir / 'handoff-cold.json')
+        entries = collect_all_entries(cold, 'c:')
+        print(next_id_in_entries(entries, 'c:'))
+    elif layer_name == 'convergence':
+        warm = read_json(buf_dir / 'handoff-warm.json')
+        entries = warm.get('convergence_web', {}).get('entries', [])
+        print(next_id_in_entries(entries, 'cw:'))
+    else:
+        print(f"Error: unknown layer '{layer_name}'. Use: warm, cold, convergence",
+              file=sys.stderr)
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# Subcommand: archive
+# ---------------------------------------------------------------------------
+
+def cmd_archive(args):
+    """Cold->tower archival: compute dependency map and create tower file."""
+    buf_dir = Path(args.buffer_dir)
+    cold = read_json(buf_dir / 'handoff-cold.json')
+
+    if not cold:
+        print("No cold layer found.", file=sys.stderr)
+        sys.exit(1)
+
+    cold_lines = count_json_lines(cold)
+    if cold_lines <= COLD_MAX_LINES and not args.force:
+        print(f"Cold layer at {cold_lines} lines (max {COLD_MAX_LINES}). "
+              f"No archival needed. Use --force to override.", file=sys.stderr)
+        sys.exit(0)
+
+    # Compute dependency map
+    all_entries = []
+    for key in ['archived_decisions', 'superseded_mappings', 'dialogue_trace']:
+        for entry in cold.get(key, []):
+            entry_id = entry.get('id', '')
+            if entry_id:
+                all_entries.append({
+                    'id': entry_id,
+                    'section': key,
+                    'refs': [],  # entries that reference this one
+                    'depth': 0,
+                    'was': entry.get('what', entry.get('key', entry.get('thread', '?')))[:60]
+                })
+
+    # Build reference graph
+    all_ids = {e['id'] for e in all_entries}
+    cold_text = json.dumps(cold)
+    for entry in all_entries:
+        for other in all_entries:
+            if other['id'] != entry['id'] and entry['id'] in str(cold.get(other['section'], [])):
+                entry['refs'].append(other['id'])
+                entry['depth'] += 1
+
+    # Sort: depth-0 entries are safe to archive
+    all_entries.sort(key=lambda e: e['depth'])
+
+    # Output dependency map
+    result = {
+        'cold_lines': cold_lines,
+        'total_entries': len(all_entries),
+        'entries': [
+            {
+                'id': e['id'],
+                'section': e['section'],
+                'depth': e['depth'],
+                'refs': e['refs'],
+                'was': e['was'],
+                'safe_to_archive': e['depth'] == 0
+            }
+            for e in all_entries
+        ]
+    }
+
+    if args.entry_ids:
+        # Archive specific entries
+        ids_to_archive = set(args.entry_ids)
+
+        # Find next tower number
+        existing_towers = list(buf_dir.glob('handoff-tower-*.json'))
+        tower_num = len(existing_towers) + 1
+        tower_name = f"handoff-tower-{tower_num:03d}-{date.today()}.json"
+
+        tower_entries = []
+        for key in ['archived_decisions', 'superseded_mappings', 'dialogue_trace']:
+            remaining = []
+            for entry in cold.get(key, []):
+                if entry.get('id', '') in ids_to_archive:
+                    tower_entries.append(entry)
+                    # Leave tombstone
+                    remaining.append({
+                        'id': entry.get('id'),
+                        'archived_to': f"tower-{tower_num:03d}",
+                        'was': entry.get('what', entry.get('key', '?'))[:60],
+                        'session_archived': str(date.today())
+                    })
+                else:
+                    remaining.append(entry)
+            cold[key] = remaining
+
+        tower = {
+            'schema_version': 2,
+            'layer': 'tower',
+            'tower_number': tower_num,
+            'created': str(date.today()),
+            'entries': tower_entries
+        }
+
+        write_json(buf_dir / tower_name, tower)
+        write_json(buf_dir / 'handoff-cold.json', cold)
+
+        result['archived'] = {
+            'tower_file': tower_name,
+            'entries_archived': len(tower_entries),
+            'cold_lines_after': count_json_lines(cold)
+        }
+        print(f"Archived {len(tower_entries)} entries to {tower_name}", file=sys.stderr)
+    else:
+        print("Dependency map generated. Pass --entry-ids to archive specific entries.",
+              file=sys.stderr)
+
+    print(json.dumps(result, indent=2))
+
+
+# ---------------------------------------------------------------------------
+# Subcommand: handoff — full pipeline: update + migrate + sync
+#
+# Accepts a changes file (alpha stash) via --input, then runs the complete
+# sigma trunk pipeline in a single invocation.
+# ---------------------------------------------------------------------------
+
+def cmd_handoff(args):
+    """Full handoff pipeline: update -> migrate -> sync.
+
+    Accepts a changes file (alpha stash, same schema as 'update'), then runs
+    the complete pipeline in a single invocation. This replaces calling update,
+    migrate, and sync separately — saving 3 tool calls and ~50% of handoff
+    tokens.
+
+    The alpha stash schema:
+    {
+      "session_meta": { "date", "commit", "branch", "files_modified", "tests" },
+      "active_work": { "current_phase", "completed_this_session", "in_progress", "blocked_by", "next_action" },
+      "new_decisions": [ { "what", "chose", "why" } ],
+      "open_threads": [ { "thread", "status", "ref?" } ],
+      "instance_notes": { "from", "to", "remarks": [], "open_questions": [] },
+      "natural_summary": "...",
+      "concept_map_changes": [ { "action": "add|update|flag|promote", ... } ],
+      "convergence_web_changes": [ { "action": "add|update", ... } ],
+      "validation_log_entries": [ { "check", "status", "detail" } ]
+    }
+    """
+    import types
+
+    buf_dir = args.buffer_dir
+    warm_max = args.warm_max or WARM_MAX_LINES_DEFAULT
+    pipeline_report = []
+
+    # --- Phase 1: Update (merge alpha stash into sigma trunk) ---
+    update_args = types.SimpleNamespace(
+        buffer_dir=buf_dir,
+        input=args.input,
+    )
+    try:
+        cmd_update(update_args)
+        pipeline_report.append("update: OK")
+    except SystemExit as e:
+        if e.code and e.code != 0:
+            pipeline_report.append(f"update: FAILED (exit {e.code})")
+            result = {'status': 'error', 'phase': 'update', 'pipeline': pipeline_report}
+            print(json.dumps(result, indent=2))
+            sys.exit(1)
+
+    # --- Phase 2: Migrate (conservation enforcement) ---
+    migrate_args = types.SimpleNamespace(
+        buffer_dir=buf_dir,
+        warm_max=warm_max,
+        dry_run=False,
+    )
+    try:
+        cmd_migrate(migrate_args)
+        pipeline_report.append("migrate: OK")
+    except SystemExit as e:
+        if e.code and e.code != 0:
+            pipeline_report.append(f"migrate: FAILED (exit {e.code})")
+
+    # --- Phase 3: Sync (MEMORY.md + project registry) ---
+    sync_args = types.SimpleNamespace(
+        buffer_dir=buf_dir,
+        memory_path=args.memory_path,
+        registry_path=args.registry_path,
+        project_name=args.project_name,
+    )
+    try:
+        cmd_sync(sync_args)
+        pipeline_report.append("sync: OK")
+    except SystemExit as e:
+        if e.code and e.code != 0:
+            pipeline_report.append(f"sync: FAILED (exit {e.code})")
+
+    # --- Final report ---
+    hot = read_json(Path(buf_dir) / 'handoff.json')
+    warm = read_json(Path(buf_dir) / 'handoff-warm.json')
+    cold = read_json(Path(buf_dir) / 'handoff-cold.json')
+
+    result = {
+        'status': 'ok',
+        'pipeline': pipeline_report,
+        'hot_lines': count_json_lines(hot),
+        'warm_lines': count_json_lines(warm) if warm else 0,
+        'cold_lines': count_json_lines(cold) if cold else 0,
+    }
+    print(json.dumps(result, indent=2))
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='Session buffer manager — sigma trunk operations for hot/warm/cold layers'
+    )
+    subparsers = parser.add_subparsers(dest='command', help='Subcommand')
+
+    # --- read ---
+    p_read = subparsers.add_parser('read', help='Reconstruct context from buffer layers')
+    p_read.add_argument('--buffer-dir', required=True, help='Path to buffer directory')
+    p_read.add_argument('--warm-max', type=int, default=None, help='Warm layer max lines')
+    p_read.set_defaults(func=cmd_read)
+
+    # --- update ---
+    p_update = subparsers.add_parser('update',
+        help='Merge alpha stash (session changes) into buffer layers')
+    p_update.add_argument('--buffer-dir', required=True, help='Path to buffer directory')
+    p_update.add_argument('--input', default=None,
+        help='Path to alpha stash JSON file (default: stdin)')
+    p_update.set_defaults(func=cmd_update)
+
+    # --- migrate ---
+    p_migrate = subparsers.add_parser('migrate', help='Conservation enforcement')
+    p_migrate.add_argument('--buffer-dir', required=True, help='Path to buffer directory')
+    p_migrate.add_argument('--warm-max', type=int, default=None, help='Warm layer max lines')
+    p_migrate.add_argument('--dry-run', action='store_true', help='Report without writing')
+    p_migrate.set_defaults(func=cmd_migrate)
+
+    # --- validate ---
+    p_validate = subparsers.add_parser('validate', help='Check layers against constraints')
+    p_validate.add_argument('--buffer-dir', required=True, help='Path to buffer directory')
+    p_validate.add_argument('--warm-max', type=int, default=None, help='Warm layer max lines')
+    p_validate.set_defaults(func=cmd_validate)
+
+    # --- sync ---
+    p_sync = subparsers.add_parser('sync', help='Sync MEMORY.md + project registry')
+    p_sync.add_argument('--buffer-dir', required=True, help='Path to buffer directory')
+    p_sync.add_argument('--memory-path', default=None, help='Path to MEMORY.md')
+    p_sync.add_argument('--registry-path', default=None, help='Path to projects.json')
+    p_sync.add_argument('--project-name', default=None, help='Project name for registry')
+    p_sync.set_defaults(func=cmd_sync)
+
+    # --- next-id ---
+    p_nextid = subparsers.add_parser('next-id', help='Get next available ID')
+    p_nextid.add_argument('--buffer-dir', required=True, help='Path to buffer directory')
+    p_nextid.add_argument('--layer', required=True, choices=['warm', 'cold', 'convergence'],
+                          help='Layer to get ID for')
+    p_nextid.set_defaults(func=cmd_next_id)
+
+    # --- handoff (full pipeline) ---
+    p_handoff = subparsers.add_parser('handoff',
+        help='Full pipeline: update + migrate + sync in one call (preferred)')
+    p_handoff.add_argument('--buffer-dir', required=True, help='Path to buffer directory')
+    p_handoff.add_argument('--input', default=None,
+        help='Path to alpha stash JSON file (default: stdin)')
+    p_handoff.add_argument('--warm-max', type=int, default=None, help='Warm layer max lines')
+    p_handoff.add_argument('--memory-path', default=None, help='Path to MEMORY.md')
+    p_handoff.add_argument('--registry-path', default=None, help='Path to projects.json')
+    p_handoff.add_argument('--project-name', default=None, help='Project name for registry')
+    p_handoff.set_defaults(func=cmd_handoff)
+
+    # --- archive ---
+    p_archive = subparsers.add_parser('archive', help='Cold->tower archival')
+    p_archive.add_argument('--buffer-dir', required=True, help='Path to buffer directory')
+    p_archive.add_argument('--force', action='store_true', help='Force even if under limit')
+    p_archive.add_argument('--entry-ids', nargs='*', default=None,
+                           help='Specific entry IDs to archive (e.g., c:7 c:12)')
+    p_archive.set_defaults(func=cmd_archive)
+
+    args = parser.parse_args()
+    if not args.command:
+        parser.print_help()
+        sys.exit(1)
+
+    args.func(args)
+
+
+if __name__ == '__main__':
+    main()
