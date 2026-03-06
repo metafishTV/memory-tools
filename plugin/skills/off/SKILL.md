@@ -25,43 +25,22 @@ the handoff — if it matters, it's in the alpha stash or it's gone.
 
 ## Script Tooling
 
-**`scripts/buffer_manager.py`** handles mechanical buffer operations. You produce the CONTENT (decisions, summaries, concept entries); the script handles the PLUMBING (JSON merge, ID assignment, conservation, sync).
+**`scripts/buffer_manager.py`** handles the plumbing (JSON merge, ID assignment, conservation, sync). You produce the content; the script handles the mechanics.
 
-### Primary: `handoff` pipeline (Steps 9-12 in one call)
+**Primary**: `handoff --buffer-dir DIR --input changes.json --warm-max N --memory-path PATH --project-name NAME` — Chains update + migrate + sync in one call. Preferred workflow.
 
-```
-python buffer_manager.py handoff \
-  --buffer-dir DIR --input changes.json \
-  --warm-max N --memory-path PATH --project-name NAME
-```
+**Standalone** (debugging only): `update`, `migrate`, `validate`, `sync`, `next-id` — see script `--help`.
 
-Chains `update -> migrate -> sync` in a single invocation. This is the **preferred** workflow — do NOT call update, migrate, sync separately unless debugging.
+### Workflow (target: ~5 tool calls after cognitive steps)
 
-### Standalone commands (for debugging or partial runs)
-
-| Command | What it does |
-|---|---|
-| `update --buffer-dir DIR --input changes.json` | Merge session changes into hot+warm layers |
-| `migrate --buffer-dir DIR --warm-max N` | Conservation enforcement: hot->warm->cold |
-| `validate --buffer-dir DIR` | Check layer sizes, schema version |
-| `sync --buffer-dir DIR --memory-path PATH` | MEMORY.md status sync + project registry |
-| `next-id --buffer-dir DIR --layer warm` | Get next sequential ID |
-
-**Usage**: `python scripts/buffer_manager.py <command> [options]`
-
-### Compressed Workflow (target: ~7 tool calls total)
-
-Steps 1-8 are YOUR cognitive work. Then:
-
-1. **Read hot layer** (1 tool call)
-2. **Gather metadata** (1 parallel call — git + tests)
-3. **Compose** `_changes.json` in `.claude/buffer/` (1 Write call — see schema below)
-4. **Run `handoff` pipeline** (1 Bash call — does update + migrate + sync)
-5. **Commit** (1 Bash call)
+1. Read hot layer (1 call) + gather git metadata (1 parallel call)
+2. Compose `_changes.json` in `.claude/buffer/` (1 Write call)
+3. Run `handoff` pipeline (1 Bash call)
+4. Commit (1 Bash call)
 
 ### changes.json schema
 
-The changes.json file IS the alpha stash — the crystallized session learnings ready for merge.
+The alpha stash — crystallized session learnings ready for merge. Omit sections with no changes.
 
 ```json
 {
@@ -76,8 +55,6 @@ The changes.json file IS the alpha stash — the crystallized session learnings 
   "validation_log_entries": [ { "check", "status", "detail", "session" } ]
 }
 ```
-
-Omit sections with no changes (e.g., skip `concept_map_changes` for tooling-only sessions). The script handles ID assignment, decision migration, conservation, MEMORY.md sync, and registry updates.
 
 ---
 
@@ -255,9 +232,7 @@ This replaces the routine consolidation for this cycle. Reset `sessions_since_fu
 
 ### Step 7: Write instance notes
 
-> **Mode gate**: Lite mode skips this step.
-
-Write the `instance_notes` section — personal remarks from you to the next instance. This replaces previous instance_notes entirely.
+Write the `instance_notes` section — personal remarks from you to the next instance. This replaces previous instance_notes entirely. **All modes** — instance notes are always valuable.
 
 Include:
 
@@ -393,7 +368,14 @@ If `remote_backup` is true in the hot layer, follow the commit with `git push`.
 
 ### Step 14: Confirm
 
-Tell the user: "Handoff written and committed. The next instance can run `/session-buffer:on` to pick up where you left off."
+Run `validate --buffer-dir .claude/buffer/` to get layer sizes, then tell the user:
+
+```
+Handoff written and committed.
+Hot: [N]/200 | Warm: [N]/[max] | Cold: [N]/500
+[N] decisions, [N] threads, [N] concept map changes captured.
+The next instance can run /session-buffer:on to pick up where you left off.
+```
 
 ---
 
@@ -404,7 +386,7 @@ After the Shared Preamble (read all layers, scan dialogue, compute alpha stash):
 1. **Update hot layer fields**: `active_work`, `recent_decisions`, `open_threads`, `instance_notes`, `natural_summary`, `session_meta`
 2. **Write** `handoff.json` directly (1 Write call)
 3. **Commit**: `git add .claude/buffer/handoff.json && git commit -m "buffer: quicksave"`
-4. **Confirm**: "Quicksave written and committed."
+4. **Confirm**: "Quicksave written and committed. Hot: [N]/200 lines."
 
 **Skips**: concept map (step 6), warm consolidation (6b), conservation (9), MEMORY.md sync (11), registry (12).
 
@@ -419,6 +401,6 @@ After the Shared Preamble:
 3. **Merge** into hot layer (add to `recent_decisions`, `open_threads`, or `instance_notes` as appropriate)
 4. **Write** `handoff.json` directly (1 Write call)
 5. **Commit**: `git add .claude/buffer/handoff.json && git commit -m "buffer: targeted save"`
-6. **Confirm**: "Targeted save written and committed."
+6. **Confirm**: "Targeted save written and committed. Hot: [N]/200 lines."
 
 **Same skips as Quicksave.** The difference: AI captures only what the user specified, not the full dialogue alpha stash.

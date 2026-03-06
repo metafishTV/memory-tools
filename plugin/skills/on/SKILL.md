@@ -30,17 +30,11 @@ needed to orient.
 
 **`scripts/buffer_manager.py`** (plugin-relative) handles mechanical sigma trunk operations. Use it instead of manually parsing JSON.
 
-| Command | Replaces | What it does |
-|---|---|---|
-| `read --buffer-dir .claude/buffer/` | Steps 1, 3, 4 | Parse hot layer, resolve warm pointers (including `see` refs, tombstones, redirects), output formatted reconstruction |
-| `validate --buffer-dir .claude/buffer/` | (diagnostic) | Check layer sizes, schema version, required fields |
-| `next-id --buffer-dir .claude/buffer/ --layer warm` | (utility) | Get next sequential ID (`w:N`, `c:N`, or `cw:N`) |
+- `read --buffer-dir .claude/buffer/` — Parse hot layer, resolve warm pointers (tombstones, redirects), output formatted reconstruction. Covers Steps 1, 3, 4. Add `--warm-max N` for project overrides.
+- `validate --buffer-dir .claude/buffer/` — Check layer sizes, schema version, required fields.
+- `next-id --buffer-dir .claude/buffer/ --layer warm` — Get next sequential ID.
 
-**Usage**: `python <plugin-path>/scripts/buffer_manager.py <command> [options]`
-
-Add `--warm-max N` if the project overrides the default warm layer max (500 lines).
-
-The `read` command outputs a complete formatted reconstruction covering session state, orientation, open threads, decisions, instance notes, concept map digest, convergence web digest, resolved warm pointers, and layer size warnings. **Steps 2 (git grounding), 5 (full-scan check), 6 (instance notes presentation), 7 (MEMORY.md), and 8 (autosave arming) still need manual handling.**
+**Manual steps**: git grounding (2), full-scan check (5), instance notes presentation (6), MEMORY.md (7), autosave arming (8).
 
 ---
 
@@ -104,7 +98,7 @@ No sigma trunk found anywhere. Initialize a new project:
    - Lite — Decisions and threads only. For everyday development,
      quick projects, session continuity without research infrastructure.
 2. Popup (Full only): Project name + one-sentence core insight
-3. Popup: "Remote backup?" (see buffer-off first-run flow)
+3. Popup: "Remote backup?" (see off skill first-run flow)
 4. Initialize `.claude/buffer/` with scope-appropriate schemas:
    - **Lite**: `buffer_mode`, `session_meta`, `active_work`, `open_threads`, `recent_decisions`, `instance_notes`, `natural_summary`
    - **Full**: Full schema including `concept_map_digest`
@@ -327,12 +321,17 @@ If the memory file path is not specified in a project skill, look for:
 
 ### Step 8: Arm autosave and confirm
 
+Compute the gap between today and `session_meta.date` from the hot layer.
+
 Tell the user:
 
 ```
-Context reconstructed from [date] handoff. Ready to continue from [current_phase].
+session-buffer v0.1.4 | [scope] mode
+Context reconstructed from [date] handoff ([N days ago]). Ready to continue from [current_phase].
 Autosave armed — sigma trunk will stay current throughout the session.
 ```
+
+If the handoff is >7 days old, add: "Note: trunk is [N] days stale — git state may have diverged significantly."
 
 **MANDATORY**: You MUST present a priority check popup via AskUserQuestion before doing any work.
 Do NOT start working on the next action, even if you know what it is. The user decides what comes first.

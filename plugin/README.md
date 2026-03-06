@@ -102,12 +102,12 @@ Use overrides to define:
 
 ```
 session-buffer/
-  .claude-plugin/plugin.json    Plugin manifest
   skills/
-    buffer/SKILL.md             Architecture reference
-    buffer-off/SKILL.md         Handoff skill (Totalize/Quicksave/Targeted)
-    buffer-on/SKILL.md          Rehydration skill (project selector)
+    buffer/SKILL.md             Dispatcher (routes to on/off)
+    on/SKILL.md                 Rehydration skill (project selector)
+    off/SKILL.md                Handoff skill (Totalize/Quicksave/Targeted)
   hooks/hooks.json              Compact hooks (PreCompact + SessionStart)
+  docs/architecture.md          Layer schemas, ID rules, consolidation protocol
   scripts/
     buffer_manager.py           Sigma trunk operations
     compact_hook.py             Compaction marker + context injection
