@@ -23,6 +23,8 @@ the handoff — if it matters, it's in the alpha stash or it's gone.
 
 **What you produce**: `handoff.json` (hot), `handoff-warm.json` (warm), `handoff-cold.json` (cold) in `.claude/buffer/`, plus updates to `alpha/` (reference memory) if concept map entries changed, plus a git commit.
 
+**ENFORCEMENT RULE — applies to every step below**: Any step that requires user input MUST use the `AskUserQuestion` tool. Do NOT substitute plain text questions, do NOT infer the user's answer from context, and do NOT skip the question because the answer seems obvious. You MUST call `AskUserQuestion`, you MUST wait for the response, and you MUST NOT continue past that step until the user has answered. Steps requiring `AskUserQuestion` are marked with **⚠ MANDATORY POPUP**.
+
 ## Script Tooling
 
 **`scripts/buffer_manager.py`** handles the plumbing (JSON merge, ID assignment, conservation, sync). You produce the content; the script handles the mechanics.
@@ -62,15 +64,15 @@ The alpha stash — crystallized session learnings ready for merge. Omit section
 
 ## Mode Selection (FIRST)
 
-**MANDATORY**: You MUST present the mode selector popup via AskUserQuestion before proceeding.
-Do NOT default to Totalize. Do NOT infer the mode from context. The user chooses.
+**⚠ MANDATORY POPUP**: You MUST call `AskUserQuestion` with the options below before proceeding.
+Do NOT default to Totalize. Do NOT infer the mode from context. Do NOT skip this popup. The user chooses.
 
-AskUserQuestion options:
+`AskUserQuestion` options:
 - **Totalize** — Complete end-of-session handoff (all steps below)
 - **Quicksave** — Fast sigma trunk checkpoint (~3 tool calls)
 - **Targeted** — Save specific items the user names (~4 tool calls)
 
-**Wait for the user's selection before doing anything else.** Even if the session is ending and a full handoff seems obvious, the user may prefer a quicksave. Never assume.
+**Wait for the user's response before doing anything else.** Do NOT continue until the user has answered. Even if the session is ending and a full handoff seems obvious, the user may prefer a quicksave. Never assume.
 
 Then follow the selected mode. All modes begin with the **Shared Preamble**.
 
@@ -92,18 +94,19 @@ After preamble, branch by mode:
 ## First-Run Detection
 
 If `.claude/buffer/handoff.json` does not exist, this is a first-run.
-Before proceeding, complete initial setup via AskUserQuestion popups:
+Before proceeding, complete initial setup. Each numbered step below is a **⚠ MANDATORY POPUP** — you MUST use `AskUserQuestion` for each one, wait for the response, and only then proceed to the next:
 
-1. **Scope** (popup): "Buffer scope?" ->
+1. **Scope** — **⚠ MANDATORY POPUP** via `AskUserQuestion`: "Buffer scope?"
    - **Full** — Concept maps, convergence webs, conservation, tower archival.
      For research projects, multi-source analysis, deep domain work.
    - **Lite** — Decisions and threads only. For everyday development,
      quick projects, session continuity without research infrastructure.
+   Wait for response before continuing.
 
-2. **Project identity** (popup, Full only):
-   Project name + one-sentence core insight (seeds orientation.core_insight)
+2. **Project identity** — **⚠ MANDATORY POPUP** via `AskUserQuestion` (Full only):
+   "Project name + one-sentence core insight." Wait for response.
 
-3. **Remote backup** (popup):
+3. **Remote backup** — **⚠ MANDATORY POPUP** via `AskUserQuestion`:
    - Git remote detected -> "Auto-push buffer after each handoff?" (yes/no)
    - No remote -> "Connect a GitHub repo for remote backup? Your work
      deserves a backup that lives somewhere safe." (yes -> guide setup / no)
@@ -224,8 +227,8 @@ Alpha files are self-contained and small (30-80 lines each), making targeted con
 
 When `sessions_since_full_scan >= full_scan_threshold`, scan alpha index for:
 1. Self-integrated entries -> apply deeper consolidation with confidence (automated)
-2. Inherited entries -> identify candidates, present proposals to user, wait for approval
-3. Apply only approved changes
+2. Inherited entries -> identify candidates, **⚠ MANDATORY POPUP**: present proposals via `AskUserQuestion`, wait for the user's response — do NOT auto-approve
+3. Apply ONLY the changes the user explicitly approved
 4. Reset `sessions_since_full_scan` to 0
 
 **Rules (all consolidation):**
@@ -278,16 +281,16 @@ Check each layer against its size bound and enforce migration. See SKILL.md for 
   **Note (alpha-aware):** After alpha migration, warm contains only `decisions_archive` + `validation_log` (~274 lines). Conservation rarely triggers. If it does, it's because decisions/validation entries accumulated beyond the cap — migrate the oldest to cold as above. The concept_map lives in the alpha bin (no size cap, no decay) and is not subject to warm conservation.
 
 **If cold > 500 lines:**
-- Trigger the archival questionnaire (3 steps):
+- Trigger the archival questionnaire. Each step is a **⚠ MANDATORY POPUP** — you MUST use `AskUserQuestion` for each, wait for the response, and only then proceed to the next:
 
   **Questionnaire Step 1 — Full scan + dependency map:**
-  Read entire cold layer. For each entry, compute nesting depth (how many other entries reference it). Present to user with depth-0 entries marked as safe to archive and depth > 0 entries showing what references them.
+  Read entire cold layer. For each entry, compute nesting depth (how many other entries reference it). **⚠ MANDATORY POPUP**: Present results via `AskUserQuestion` — show depth-0 entries marked as safe to archive and depth > 0 entries showing what references them. Wait for the user to acknowledge before continuing.
 
   **Questionnaire Step 2 — Pick ratio AND direction:**
-  Offer three ratio choices (20/80, 33/66, 50/50). User also chooses which portion goes to the tower (smaller or larger). This is bidirectional — the user has full sovereignty.
+  **⚠ MANDATORY POPUP**: Present ratio choices via `AskUserQuestion` — options: 20/80, 33/66, 50/50. User also chooses which portion goes to the tower (smaller or larger). This is bidirectional — the user has full sovereignty. Wait for response.
 
   **Questionnaire Step 3 — Pick entries:**
-  User selects specific entries for archival, informed by the dependency map.
+  **⚠ MANDATORY POPUP**: Present entry list via `AskUserQuestion`. User selects specific entries for archival, informed by the dependency map. Wait for response. Do NOT auto-select entries.
 
 - Create a tower file: `handoff-tower-NNN-YYYY-MM-DD.json` in `.claude/buffer/`
 - Leave tombstones in cold for archived entries:
@@ -404,7 +407,7 @@ After the Shared Preamble (read all layers, scan dialogue, compute alpha stash):
 
 After the Shared Preamble:
 
-1. **Ask user**: "What do you want to capture?" (AskUserQuestion, free-text)
+1. **⚠ MANDATORY POPUP**: Ask the user via `AskUserQuestion`: "What do you want to capture?" Wait for their response before continuing. Do NOT infer from the conversation what they want saved.
 2. **Compose** entries from the user's description only — do not scan full dialogue
 3. **Merge** into hot layer (add to `recent_decisions`, `open_threads`, or `instance_notes` as appropriate)
 4. **Write** `handoff.json` directly (1 Write call)

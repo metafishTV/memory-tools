@@ -27,6 +27,8 @@ needed to orient.
 
 **What you produce**: A reconstructed context in your working memory, an armed autosave, and a clear presentation to the user of where things stand and what comes next.
 
+**ENFORCEMENT RULE — applies to every step below**: Any step that requires user input MUST use the `AskUserQuestion` tool. Do NOT substitute plain text questions, do NOT infer the user's answer from context, and do NOT skip the question because the answer seems obvious. You MUST call `AskUserQuestion`, you MUST wait for the response, and you MUST NOT continue past that step until the user has answered. Steps requiring `AskUserQuestion` are marked with **⚠ MANDATORY POPUP**.
+
 ## Script Tooling
 
 **`scripts/buffer_manager.py`** (plugin-relative) handles mechanical sigma trunk operations. Use it instead of manually parsing JSON.
@@ -46,7 +48,7 @@ needed to orient.
 
 ## Step 0: Project Routing
 
-**MANDATORY**: Always show the project selector popup before loading anything.
+**⚠ MANDATORY POPUP**: Always show the project selector via AskUserQuestion before loading anything.
 Never auto-load a trunk without user confirmation.
 
 ### 0a: Check for project skill
@@ -66,7 +68,7 @@ Collect available options silently — do NOT load any trunk data at this point:
 
 ### 0c: Project selector (ALWAYS shown)
 
-**You MUST present this popup via AskUserQuestion before proceeding.**
+**⚠ MANDATORY POPUP**: You MUST call `AskUserQuestion` with the options below before proceeding. Do NOT skip this. Do NOT load any trunk data until the user responds.
 The popup adapts to what was found in 0b:
 
 **Local trunk found + registry has entries:**
@@ -98,13 +100,14 @@ If user selects "Start new project" or "Start lite session": proceed to 0d.
 
 No sigma trunk found anywhere. Initialize a new project:
 
-1. Popup: "Buffer scope?" — Full / Lite
+1. **⚠ MANDATORY POPUP** via AskUserQuestion: "Buffer scope?" — Full / Lite
    - Full — Concept maps, convergence webs, conservation, tower archival.
      For research projects, multi-source analysis, deep domain work.
    - Lite — Decisions and threads only. For everyday development,
      quick projects, session continuity without research infrastructure.
-2. Popup (Full only): Project name + one-sentence core insight
-3. Popup: "Remote backup?" (see off skill first-run flow)
+   Wait for response before continuing.
+2. **⚠ MANDATORY POPUP** via AskUserQuestion (Full only): "Project name + one-sentence core insight." Wait for response.
+3. **⚠ MANDATORY POPUP** via AskUserQuestion: "Remote backup?" (see off skill first-run flow). Wait for response.
 4. Initialize `.claude/buffer/` with scope-appropriate schemas:
    - **Lite**: `buffer_mode`, `session_meta`, `active_work`, `open_threads`, `recent_decisions`, `instance_notes`, `natural_summary`
    - **Full**: Full schema including `concept_map_digest`
@@ -139,20 +142,15 @@ After registering the project, configure how MEMORY.md and the sigma trunk coexi
 
 1. Locate MEMORY.md (check repo root, `.claude/`, `~/.claude/projects/*/memory/`)
 
-2. **If MEMORY.md exists**, present the user with two options:
+2. **If MEMORY.md exists** — **⚠ MANDATORY POPUP**: You MUST present the following options via `AskUserQuestion`. Do NOT choose for the user. Do NOT skip this step. Wait for the response before continuing.
 
-   ```
-   I found a MEMORY.md file. The sigma trunk works best as the single source
-   of truth for theoretical content and session state. How should I handle MEMORY.md?
-
-   1. Full integration — Restructure MEMORY.md into a lean orientation card
-      (~50-60 lines): project location, architecture, parameters, preferences,
-      and a pointer to the sigma trunk. Theoretical definitions and source mappings
-      migrate to the trunk's concept_map. No content is lost.
-
-   2. No integration — Leave MEMORY.md as-is. The sigma trunk operates
-      independently. Duplicate content may load in /buffer:on sessions.
-   ```
+   Options:
+   - **Full integration** — Restructure MEMORY.md into a lean orientation card
+     (~50-60 lines): project location, architecture, parameters, preferences,
+     and a pointer to the sigma trunk. Theoretical definitions and source mappings
+     migrate to the trunk's concept_map. No content is lost.
+   - **No integration** — Leave MEMORY.md as-is. The sigma trunk operates
+     independently. Duplicate content may load in /buffer:on sessions.
 
 3. Record the choice in the hot layer:
    ```json
@@ -292,13 +290,16 @@ Present flagged/changed concepts:
 
 If `sessions_since_full_scan >= full_scan_threshold`:
 
-```
-It's been [N] sessions since a full sigma trunk scan (threshold: [T]).
-Would you like me to do a complete review of warm + cold layers?
-```
+**⚠ MANDATORY POPUP**: You MUST present this choice via `AskUserQuestion`. Do NOT auto-skip. Do NOT decide for the user.
 
-- If yes: read all layers, surface stale/orphaned entries, reset `sessions_since_full_scan` to 0 in the hot layer
-- If no: continue with selective loading
+Options:
+- **Full scan** — "It's been [N] sessions since a full sigma trunk scan (threshold: [T]). Run a complete review of warm + cold layers now."
+- **Skip** — "Continue with selective loading. I'll ask again next session."
+
+Wait for the user's response before continuing.
+
+- If Full scan: read all layers, surface stale/orphaned entries, reset `sessions_since_full_scan` to 0 in the hot layer
+- If Skip: continue with selective loading
 
 **Promotion check** (only during full scan, only if `memory_config.integration` is `"full"`):
 
@@ -306,14 +307,13 @@ After the full scan completes, identify warm-layer entries that:
 1. Have not changed in the last `full_scan_threshold` sessions (stable)
 2. Were pointer-loaded in 3+ consecutive sessions (frequently referenced)
 
-If any qualify, present to the user:
-```
-These sigma trunk entries are stable and loaded nearly every session.
-Promoting them to MEMORY.md makes them available without /buffer:on:
-- [concept] (unchanged N sessions, loaded M times)
+**⚠ MANDATORY POPUP**: If any qualify, you MUST present them to the user via `AskUserQuestion`. Do NOT auto-promote. Do NOT skip this step.
 
-Promote to MEMORY.md's Stable Definitions section? (max 10 lines per cycle)
-```
+Options:
+- **Promote** — "These sigma trunk entries are stable and loaded nearly every session. Promoting them to MEMORY.md makes them available without /buffer:on: [list concepts with unchanged N sessions, loaded M times]. Max 10 lines per cycle."
+- **Decline** — "Skip promotion this session."
+
+Wait for the user's response before continuing.
 
 If approved:
 - Add/update a `## Stable Definitions` section in MEMORY.md (before `## Sigma Trunk Integration`)
@@ -365,10 +365,10 @@ Autosave armed — sigma trunk will stay current throughout the session.
 
 If the handoff is >7 days old, add: "Note: trunk is [N] days stale — git state may have diverged significantly."
 
-**MANDATORY**: You MUST present a priority check popup via AskUserQuestion before doing any work.
-Do NOT start working on the next action, even if you know what it is. The user decides what comes first.
+**⚠ MANDATORY POPUP**: You MUST present a priority check via `AskUserQuestion` before doing any work.
+Do NOT start working on the next action, even if you know what it is. Do NOT skip this popup. The user decides what comes first.
 
-AskUserQuestion options:
+`AskUserQuestion` options:
 - Proceed with [next_action or first open_thread]
 - Different priority (let user specify)
 
@@ -418,15 +418,14 @@ Write ONLY `handoff.json`. Do not touch warm or cold layers.
 Before writing, check whether the updated hot layer exceeds 200 lines. If it does:
 
 1. **Do NOT silently migrate** — autosave cannot push content to warm/cold on its own
-2. **Prompt the user**:
-   ```
-   Hot layer is at [N] lines (limit: 200). Autosave can't write without
-   pushing older entries to warm. Options:
-   - Run `/buffer:off` now (full conservation with your input)
-   - Let me trim this save to essentials only (skip older decisions/threads)
-   - Skip this autosave (sigma trunk stays at last state)
-   ```
-3. Wait for user choice before proceeding
+2. **⚠ MANDATORY POPUP**: You MUST present these options via `AskUserQuestion`. Do NOT silently trim or skip.
+
+   Options:
+   - **Run /buffer:off** — "Hot layer is at [N] lines (limit: 200). Run a full handoff now to conserve with your input."
+   - **Trim to essentials** — "Skip older decisions/threads and save only current state."
+   - **Skip autosave** — "Sigma trunk stays at last state. Nothing written."
+
+3. Wait for user choice before proceeding. Do NOT continue until the user has answered.
 
 The same principle applies transitively: if a full `/buffer:off` would cascade warm to cold or cold to archival, those operations already require user input (the archival questionnaire in `/buffer:off` Step 9). Autosave simply refuses to start that cascade silently.
 

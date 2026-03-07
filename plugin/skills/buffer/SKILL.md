@@ -16,7 +16,7 @@ If ARGUMENTS contains "off":
 → Invoke the `buffer:off` skill via the Skill tool. Follow its instructions completely.
 
 If no argument or unrecognized argument:
-→ Ask the user: "Start session (`/buffer:on`) or save handoff (`/buffer:off`)?"
+→ **⚠ MANDATORY POPUP**: You MUST use `AskUserQuestion` to ask: "Start session (`/buffer:on`) or save handoff (`/buffer:off`)?" Do NOT guess. Do NOT default to either. Wait for the user's response.
 
 ## Rules
 
