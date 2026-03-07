@@ -21,13 +21,15 @@ the handoff — if it matters, it's in the alpha stash or it's gone.
   mappings, things that surprised you.
 - If a project skill exists, it overrides this file entirely.
 
-**What you produce**: `handoff.json` (hot), `handoff-warm.json` (warm), `handoff-cold.json` (cold) in `.claude/buffer/`, plus a git commit.
+**What you produce**: `handoff.json` (hot), `handoff-warm.json` (warm), `handoff-cold.json` (cold) in `.claude/buffer/`, plus updates to `alpha/` (reference memory) if concept map entries changed, plus a git commit.
 
 ## Script Tooling
 
 **`scripts/buffer_manager.py`** handles the plumbing (JSON merge, ID assignment, conservation, sync). You produce the content; the script handles the mechanics.
 
 **Primary**: `handoff --buffer-dir DIR --input changes.json --warm-max N --memory-path PATH --project-name NAME` — Chains update + migrate + sync in one call. Preferred workflow.
+
+**Alpha bin**: `alpha-read`, `alpha-query --id/--source/--concept`, `alpha-validate` — reference memory queries. Use `next-id --layer warm` to get the next w:N ID (scans alpha to prevent collisions).
 
 **Standalone** (debugging only): `update`, `migrate`, `validate`, `sync`, `next-id` — see script `--help`.
 
@@ -185,49 +187,52 @@ Identify unresolved questions, deferred items, and next steps. Write each to `op
 
 > **Mode gate**: Full only. Lite mode skips this step (no concept map).
 
-Read the warm layer's `concept_map`. For each decision from Step 4, check if it touches a concept mapping:
+**Alpha-aware**: After migration, concept_map entries (cross_source, convergence_web, framework) live in the **alpha bin** (`alpha/` directory), not the warm layer. The warm layer retains only `decisions_archive` and `validation_log`.
 
-- If a mapping **changed**: update the warm entry, add to hot `concept_map_digest.recent_changes` with status `CHANGED`
-- If a **new concept** was introduced: add a new warm entry with a new `w:N` ID, add to digest as `NEW`
-- If a **suggestion was confirmed** by the user: promote `suggest` to `equiv`, log as `PROMOTED`
-- If a **foundational concept** was questioned: log as `NEEDS_USER_INPUT`, do NOT auto-change
+1. Run `alpha-read --buffer-dir .claude/buffer/` to get the index summary
+2. For each decision from Step 4, check if it touches a concept mapping:
+   - If a mapping **changed**: update the alpha referent file, add to hot `concept_map_digest.recent_changes` with status `CHANGED`
+   - If a **new concept** was introduced: write a new referent file to the appropriate alpha source folder, assign a new `w:N` ID (via `next-id --layer warm`), update `alpha/index.json`, add to digest as `NEW`
+   - If a **suggestion was confirmed** by the user: update the referent file's `suggest` to `equiv`, log as `PROMOTED`
+   - If a **foundational concept** was questioned: log as `NEEDS_USER_INPUT`, do NOT auto-change
 
-Update `concept_map_digest._meta.total_entries` and `last_validated`.
+3. Update `concept_map_digest._meta.total_entries` and `last_validated`
+4. If alpha doesn't exist (pre-migration project), fall back to warm-layer concept_map operations
 
 **IMPORTANT**: `suggest: null` is the PREFERRED state. Do NOT feel pressure to populate suggest fields. Only flag genuine structural parallels noticed during the session. The user must confirm any suggestion before it becomes an equiv.
 
-### Step 6b: Warm consolidation
+### Step 6b: Consolidation
 
 > **Mode gate**: Full only. Lite mode skips this step.
 
-After validating entries, perform a consolidation pass on the warm layer. The warm layer should *iterate* — same structure, richer each pass — not merely accumulate.
+**Alpha-aware**: With reference memory in the alpha bin, consolidation operates differently:
 
-**Every-session consolidation** (automated, self-integrated entries only):
+**Warm layer consolidation** (decisions_archive + validation_log):
+- Warm is now small (~274 lines). Consolidation means compressing verbose decision/validation entries using established vocabulary.
+- Log all changes in `validation_log` with status `CONSOLIDATED`.
 
-For entries the current instance **created or meaningfully modified this session**:
+**Alpha referent consolidation** (individual .md files):
+For alpha entries the current instance **created or meaningfully modified this session**:
 
-- **Vocabulary compression**: Replace multi-word descriptions with established terms from the concept_map
-- **Same-concept merge**: If two entries describe the same structural relationship, merge (keep richer formulation, absorb unique content, leave redirect tombstone)
-- **Description tightening**: Shorten explanatory prose to referential shorthand, using project vocabulary
+- **Vocabulary compression**: Replace multi-word descriptions with established terms
+- **Same-concept merge**: If two referent files describe the same structural relationship, merge into one file and update `alpha/index.json` (remove absorbed entry, update merged entry)
+- **Description tightening**: Shorten explanatory prose to referential shorthand
 
-Log all changes in `validation_log` with status `CONSOLIDATED`.
+Alpha files are self-contained and small (30-80 lines each), making targeted consolidation natural — edit a single file, update the index. No need to parse/rewrite large JSON arrays.
 
 **Periodic deep consolidation** (at `full_scan_threshold`):
 
-When `sessions_since_full_scan >= full_scan_threshold`, trigger the Provenance-Aware Consolidation Protocol (defined in SKILL.md):
-
-1. Read all warm entries
-2. Self-integrated entries -> apply deeper consolidation with confidence (automated)
-3. Inherited entries -> identify candidates, present proposals to user, wait for approval
-4. Apply only approved changes
-
-This replaces the routine consolidation for this cycle. Reset `sessions_since_full_scan` to 0 after completion.
+When `sessions_since_full_scan >= full_scan_threshold`, scan alpha index for:
+1. Self-integrated entries -> apply deeper consolidation with confidence (automated)
+2. Inherited entries -> identify candidates, present proposals to user, wait for approval
+3. Apply only approved changes
+4. Reset `sessions_since_full_scan` to 0
 
 **Rules (all consolidation):**
-- Never consolidate across concept_map groups (group boundaries are structural)
-- Never auto-consolidate base-system entries without `NEEDS_USER_INPUT`
-- All consolidations logged in `validation_log` with status `CONSOLIDATED` and both entry IDs
-- Absorbed entries get redirect tombstones
+- Never consolidate across source folders (folder boundaries are structural)
+- Never auto-consolidate framework entries without `NEEDS_USER_INPUT`
+- All consolidations logged in warm `validation_log` with status `CONSOLIDATED` and both entry IDs
+- Absorbed entries: delete the file, remove from `alpha/index.json`
 - When in doubt, don't merge — false merges lose meaning, missed merges just cost tokens
 
 ### Step 7: Write instance notes
@@ -238,6 +243,7 @@ Include:
 
 - **remarks**: Things you learned about working with this user, this codebase, or this project that are not captured in the structured data. Warnings, tips, things that surprised you.
 - **open_questions**: Questions that occurred to you during the session but you did not get to raise. These help the next instance know where the edges of understanding are.
+- **alpha_accessed**: (optional) List of alpha referent IDs loaded this session (e.g., `["w:218", "cw:83"]`). Helps the next instance know which referents were relevant to this session's work without loading everything.
 
 Be honest. If something confused you, say so. If a mapping felt forced, flag it. The next instance benefits more from candor than from false confidence.
 
@@ -269,7 +275,7 @@ Check each layer against its size bound and enforce migration. See SKILL.md for 
   3. Hot-layer `"see"` pointers continue to resolve via the tombstone
 - Re-check. If still over, warn the user.
 
-  **Note:** The `concept_map` is not migrated — it is the structural backbone and should be preserved in warm. If the concept_map alone approaches the warm bound, consider: (a) archiving unused cross_source entries that haven't been referenced in 3+ sessions, or (b) raising the warm bound for this project in the project-level skill.
+  **Note (alpha-aware):** After alpha migration, warm contains only `decisions_archive` + `validation_log` (~274 lines). Conservation rarely triggers. If it does, it's because decisions/validation entries accumulated beyond the cap — migrate the oldest to cold as above. The concept_map lives in the alpha bin (no size cap, no decay) and is not subject to warm conservation.
 
 **If cold > 500 lines:**
 - Trigger the archival questionnaire (3 steps):
@@ -359,6 +365,8 @@ The project name comes from the hot layer's `project_name` field (if present) or
 
 ```bash
 git add .claude/buffer/handoff.json .claude/buffer/handoff-warm.json .claude/buffer/handoff-cold.json
+# Include alpha changes if any referent files were added/modified
+git add .claude/buffer/alpha/
 git commit -m "handoff: <brief description of session>"
 ```
 
@@ -372,7 +380,7 @@ Run `validate --buffer-dir .claude/buffer/` to get layer sizes, then tell the us
 
 ```
 Handoff written and committed.
-Hot: [N]/200 | Warm: [N]/[max] | Cold: [N]/500
+Hot: [N]/200 | Warm: [N]/[max] | Cold: [N]/500 | Alpha: [N] referents
 [N] decisions, [N] threads, [N] concept map changes captured.
 The next instance can run /buffer:on to pick up where you left off.
 ```

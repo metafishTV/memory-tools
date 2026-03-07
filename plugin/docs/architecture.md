@@ -15,16 +15,48 @@ Both operations reference the architecture defined here. Each checks for a proje
 
 Sigma trunk (hot / warm / cold) with bounded sizes and downward migration:
 
-| Layer | File | Max Lines | Loaded At `/buffer:on` |
-|-------|------|-----------|------------------------|
-| **Hot** | `handoff.json` | 200 | Always |
-| **Warm** | `handoff-warm.json` | 500 | Selectively (via pointers) |
-| **Cold** | `handoff-cold.json` | 500 | On-demand only |
-| **Tower** | `handoff-tower-NNN-YYYY-MM-DD.json` | Sealed | Never auto-read |
+| Layer | File | Max Lines | Loaded At `/buffer:on` | Content |
+|-------|------|-----------|------------------------|---------|
+| **Hot** | `handoff.json` | 200 | Always | Session state, digests, pointers |
+| **Warm** | `handoff-warm.json` | 500 | Selectively (via pointers) | Decisions archive, validation log |
+| **Cold** | `handoff-cold.json` | 500 | On-demand only | Archived decisions |
+| **Alpha** | `alpha/index.json` + individual `.md` files | No cap | Index always, files on-demand | Reference material (cross_source, convergence_web, framework) |
+| **Tower** | `handoff-tower-NNN-YYYY-MM-DD.json` | Sealed | Never auto-read | Historical archive |
 
 All files live in `.claude/buffer/`.
 
 Content migrates downward (hot -> warm -> cold -> tower) when bounds are exceeded. `/buffer:on` reads upward selectively (hot always, warm/cold only when pointed to). The system conserves attention by never auto-loading more than ~200 lines.
+
+### Alpha Bin (Reference Memory)
+
+The alpha bin separates **reference memory** (static, query-on-demand, no decay) from **working memory** (dynamic, session-facing, bounded, appropriate decay). It stores concept_map entries (cross_source, convergence_web) and framework definitions as individual files, addressable by ID via a lightweight index.
+
+**Structure:**
+```
+.claude/buffer/alpha/
+  index.json                     # Lightweight manifest (only file loaded by default)
+  _framework/                    # User's foundational framework definitions
+    foundational_triad.md        # w:1-w:4
+    dialectic.md                 # w:5-w:8
+    T.md / A.md / P.md / S.md   # w:9-w:36
+    RIP.md                       # w:37-w:43
+  sartre-early/                  # Per-source folder
+    w044.md                      # Individual cross_source referent
+    w045.md
+    cw013.md                     # Individual convergence_web referent
+  [one folder per source...]
+```
+
+**Key properties:**
+- **No size cap** — reference material accumulates without conservation pressure
+- **No decay** — entries persist indefinitely (unlike warm/cold which migrate and decay)
+- **Query-on-demand** — only `index.json` is loaded at startup; individual files read via `alpha-query`
+- **Self-healing** — `rebuild_index` can reconstruct `index.json` from files on disk if the index is lost
+- **Schema normalization** — entries are normalized during migration/creation to handle variant schemas (key vs source field, missing attribution, etc.)
+
+**Commands:** `alpha-read` (summary), `alpha-query` (retrieve by ID/source/concept), `alpha-validate` (integrity check).
+
+**Backward compatibility:** Projects without `alpha/` work exactly as before. All alpha-aware code checks for alpha existence first and falls back to warm-layer operations.
 
 ### Pointer-Index System
 

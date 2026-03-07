@@ -2,17 +2,21 @@
 """
 Session Buffer — Buffer Manager
 
-Mechanical operations for the three-layer session buffer (sigma trunk).
-Handles JSON merge, ID assignment, conservation enforcement, and MEMORY.md sync.
+Mechanical operations for the session buffer (sigma trunk + alpha bin).
+Handles JSON merge, ID assignment, conservation enforcement, MEMORY.md sync,
+and alpha bin queries.
 
 Commands:
-  handoff  — Full pipeline: update + migrate + sync (preferred)
-  update   — Merge session alpha stash into hot+warm layers
-  migrate  — Conservation: hot→warm→cold when bounds exceeded
-  validate — Check layer sizes and schema
-  sync     — MEMORY.md status sync + project registry
-  read     — Parse hot layer, resolve warm pointers, output reconstruction
-  next-id  — Get next sequential ID for a layer
+  handoff        — Full pipeline: update + migrate + sync (preferred)
+  update         — Merge session alpha stash into hot+warm layers
+  migrate        — Conservation: hot→warm→cold when bounds exceeded
+  validate       — Check layer sizes, schema, and alpha integrity
+  sync           — MEMORY.md status sync + project registry
+  read           — Parse hot layer, resolve warm pointers, output reconstruction
+  next-id        — Get next sequential ID for a layer (scans alpha too)
+  alpha-read     — Read alpha bin index, output summary
+  alpha-query    — Query alpha by ID, source, or concept (retrieves referent files)
+  alpha-validate — Check alpha bin integrity (index vs files on disk)
 
 Usage: run_python buffer_manager.py <command> [options]
 """
@@ -852,20 +856,21 @@ def cmd_validate(args):
             issues.append(f"Missing required hot field: {field}")
 
     # Pointer integrity (project mode)
+    all_layer_ids = set()
+    broken_refs = []
     if mode == 'project' and warm:
         all_warm_ids = {e.get('id') for e in collect_all_entries(warm, 'w:') if e.get('id')}
         cw_ids = {e.get('id') for e in warm.get('convergence_web', {}).get('entries', []) if e.get('id')}
-        all_ids = all_warm_ids | cw_ids
+        all_layer_ids = all_warm_ids | cw_ids
 
         # Check hot see-refs
-        broken_refs = []
         for d in hot.get('recent_decisions', []):
             for ref in d.get('see', []):
-                if ref not in all_ids:
+                if ref not in all_layer_ids:
                     broken_refs.append(ref)
         for t in hot.get('open_threads', []):
             for ref in t.get('see', []):
-                if ref not in all_ids:
+                if ref not in all_layer_ids:
                     broken_refs.append(ref)
 
         if broken_refs:
@@ -877,6 +882,32 @@ def cmd_validate(args):
     if sfs >= threshold:
         issues.append(f"Full scan due: {sfs} sessions since last scan (threshold: {threshold})")
 
+    # Alpha bin status
+    alpha_idx = read_alpha_index(buf_dir)
+    alpha_summary = {}
+    if alpha_idx:
+        alpha_summary = alpha_idx.get('summary', {})
+        info.append(f"Alpha: {alpha_summary.get('total_framework', 0)} fw, "
+                    f"{alpha_summary.get('total_cross_source', 0)} cs, "
+                    f"{alpha_summary.get('total_convergence_web', 0)} cw "
+                    f"across {alpha_summary.get('total_sources', 0)} sources")
+
+        # Check alpha_ref consistency
+        if hot.get('alpha_ref') and not (buf_dir / 'alpha' / 'index.json').exists():
+            issues.append("Hot layer has alpha_ref but alpha/index.json missing")
+
+        # Pointer integrity: check see-refs against alpha too
+        if mode == 'project' and broken_refs:
+            all_alpha_ids = alpha_all_ids(alpha_idx)
+            still_broken = [r for r in broken_refs if r not in all_alpha_ids]
+            if len(still_broken) < len(broken_refs):
+                # Some refs resolved via alpha — update the issue
+                issues = [i for i in issues if not i.startswith('Broken see-refs')]
+                if still_broken:
+                    issues.append(f"Broken see-refs: {', '.join(still_broken)}")
+    else:
+        info.append("Alpha: not present")
+
     result = {
         'status': 'ok' if not issues else 'issues_found',
         'issues': issues,
@@ -884,8 +915,9 @@ def cmd_validate(args):
         'layer_sizes': {
             'hot': hot_lines,
             'warm': warm_lines,
-            'cold': cold_lines
-        }
+            'cold': cold_lines,
+        },
+        'alpha_summary': alpha_summary
     }
     print(json.dumps(result, indent=2))
 
@@ -1030,14 +1062,28 @@ def cmd_sync(args):
 # ---------------------------------------------------------------------------
 
 def cmd_next_id(args):
-    """Get the next available ID for a layer."""
+    """Get the next available ID for a layer.
+
+    Scans both warm layer AND alpha bin to find the true max, preventing
+    ID collisions after alpha migration.
+    """
     buf_dir = Path(args.buffer_dir)
     layer_name = args.layer
+    alpha_idx = read_alpha_index(buf_dir)
 
     if layer_name == 'warm':
         warm = read_json(buf_dir / 'handoff-warm.json')
         entries = collect_all_entries(warm, 'w:')
-        print(next_id_in_entries(entries, 'w:'))
+        warm_max = 0
+        pattern = re.compile(r'^w:(\d+)$')
+        for e in entries:
+            m = pattern.match(e.get('id', ''))
+            if m:
+                warm_max = max(warm_max, int(m.group(1)))
+        # Also check alpha for w: IDs
+        alpha_w_max = alpha_max_id(alpha_idx, 'w:') if alpha_idx else 0
+        final_max = max(warm_max, alpha_w_max)
+        print(f"w:{final_max + 1}")
     elif layer_name == 'cold':
         cold = read_json(buf_dir / 'handoff-cold.json')
         entries = collect_all_entries(cold, 'c:')
@@ -1045,7 +1091,16 @@ def cmd_next_id(args):
     elif layer_name == 'convergence':
         warm = read_json(buf_dir / 'handoff-warm.json')
         entries = warm.get('convergence_web', {}).get('entries', [])
-        print(next_id_in_entries(entries, 'cw:'))
+        warm_max = 0
+        pattern = re.compile(r'^cw:(\d+)$')
+        for e in entries:
+            m = pattern.match(e.get('id', ''))
+            if m:
+                warm_max = max(warm_max, int(m.group(1)))
+        # Also check alpha for cw: IDs
+        alpha_cw_max = alpha_max_id(alpha_idx, 'cw:') if alpha_idx else 0
+        final_max = max(warm_max, alpha_cw_max)
+        print(f"cw:{final_max + 1}")
     else:
         print(f"Error: unknown layer '{layer_name}'. Use: warm, cold, convergence",
               file=sys.stderr)
@@ -1256,6 +1311,273 @@ def cmd_handoff(args):
 
 
 # ---------------------------------------------------------------------------
+# Alpha bin helpers
+# ---------------------------------------------------------------------------
+
+def alpha_index_path(buf_dir):
+    """Return path to alpha/index.json if it exists, else None."""
+    p = Path(buf_dir) / 'alpha' / 'index.json'
+    return p if p.exists() else None
+
+
+def read_alpha_index(buf_dir):
+    """Read alpha index.json. Returns empty dict if alpha doesn't exist."""
+    p = alpha_index_path(buf_dir)
+    if not p:
+        return {}
+    return read_json(p)
+
+
+def alpha_max_id(index, prefix):
+    """Find the max numeric ID in the alpha index for a given prefix (w: or cw:)."""
+    max_n = 0
+    pattern = re.compile(rf'^{re.escape(prefix)}(\d+)$')
+    for eid in index.get('entries', {}):
+        m = pattern.match(eid)
+        if m:
+            max_n = max(max_n, int(m.group(1)))
+    return max_n
+
+
+def alpha_all_ids(index):
+    """Return set of all entry IDs in the alpha index."""
+    return set(index.get('entries', {}).keys())
+
+
+# ---------------------------------------------------------------------------
+# Subcommand: alpha-read
+# ---------------------------------------------------------------------------
+
+def cmd_alpha_read(args):
+    """Read alpha/index.json and output summary.
+
+    Outputs JSON with summary stats, source list, and optional entry details.
+    Used by /buffer:on to show alpha availability without loading all referents.
+    """
+    buf_dir = Path(args.buffer_dir)
+    index = read_alpha_index(buf_dir)
+
+    if not index:
+        result = {
+            'status': 'absent',
+            'message': 'No alpha bin found. Reference memory not yet separated from warm layer.'
+        }
+        print(json.dumps(result, indent=2))
+        return
+
+    summary = index.get('summary', {})
+    sources = index.get('sources', {})
+
+    result = {
+        'status': 'ok',
+        'summary': summary,
+        'sources': {
+            name: {
+                'folder': info.get('folder', name),
+                'entry_count': info.get('entry_count', 0),
+                'framework': info.get('framework', False),
+            }
+            for name, info in sources.items()
+        },
+        'schema_version': index.get('schema_version', '?'),
+        'last_updated': index.get('last_updated', '?'),
+    }
+
+    print(json.dumps(result, indent=2))
+
+
+# ---------------------------------------------------------------------------
+# Subcommand: alpha-query
+# ---------------------------------------------------------------------------
+
+def cmd_alpha_query(args):
+    """Query alpha bin for specific referents.
+
+    Supports three query modes:
+      --id w:218        → Retrieve single entry by ID
+      --source sartre   → List all entries from a source (case-insensitive prefix match)
+      --concept total   → Search concept_index for matching terms
+    """
+    buf_dir = Path(args.buffer_dir)
+    alpha_dir = buf_dir / 'alpha'
+    index = read_alpha_index(buf_dir)
+
+    if not index:
+        print(json.dumps({'status': 'absent', 'message': 'No alpha bin found.'}))
+        return
+
+    entries = index.get('entries', {})
+    results = []
+
+    if args.id:
+        # Direct ID lookup
+        for qid in args.id:
+            if qid in entries:
+                info = entries[qid]
+                # Read the actual file content
+                fpath = alpha_dir / info['file'].replace('/', os.sep)
+                content = ''
+                if fpath.exists():
+                    try:
+                        content = fpath.read_text(encoding='utf-8')
+                    except OSError:
+                        content = '[read error]'
+                results.append({
+                    'id': qid,
+                    'source': info.get('source', '?'),
+                    'concept': info.get('concept', '?'),
+                    'file': info['file'],
+                    'content': content
+                })
+            else:
+                results.append({'id': qid, 'status': 'not_found'})
+
+    elif args.source:
+        # Source prefix search (case-insensitive)
+        query = args.source.lower()
+        # Search source_index first
+        si = index.get('source_index', {})
+        matched_ids = set()
+        for src_key, ids in si.items():
+            if src_key.lower().startswith(query) or query in src_key.lower():
+                matched_ids.update(ids)
+        # Also check folder names
+        for eid, info in entries.items():
+            if query in info.get('source', '').lower():
+                matched_ids.add(eid)
+
+        for eid in sorted(matched_ids, key=lambda x: (x.split(':')[0], int(x.split(':')[1]) if x.split(':')[1].isdigit() else 0)):
+            info = entries.get(eid, {})
+            results.append({
+                'id': eid,
+                'source': info.get('source', '?'),
+                'concept': info.get('concept', '?'),
+                'file': info.get('file', '?')
+            })
+
+    elif args.concept:
+        # Concept search (case-insensitive, partial match)
+        query = args.concept.lower()
+        ci = index.get('concept_index', {})
+        matched_ids = set()
+        for concept_key, ids in ci.items():
+            if query in concept_key:
+                matched_ids.update(ids)
+
+        for eid in sorted(matched_ids, key=lambda x: (x.split(':')[0], int(x.split(':')[1]) if x.split(':')[1].isdigit() else 0)):
+            info = entries.get(eid, {})
+            results.append({
+                'id': eid,
+                'source': info.get('source', '?'),
+                'concept': info.get('concept', '?'),
+                'file': info.get('file', '?')
+            })
+
+    output = {
+        'status': 'ok',
+        'count': len(results),
+        'results': results
+    }
+    print(json.dumps(output, indent=2, ensure_ascii=False))
+
+
+# ---------------------------------------------------------------------------
+# Subcommand: alpha-validate
+# ---------------------------------------------------------------------------
+
+def cmd_alpha_validate(args):
+    """Validate alpha bin integrity: index vs files on disk.
+
+    Checks:
+    1. Every index entry has a corresponding file on disk
+    2. Every .md file on disk has a corresponding index entry
+    3. No duplicate IDs
+    4. Schema consistency (all entries have required fields)
+    """
+    buf_dir = Path(args.buffer_dir)
+    alpha_dir = buf_dir / 'alpha'
+    index = read_alpha_index(buf_dir)
+
+    if not index:
+        print(json.dumps({'status': 'absent', 'message': 'No alpha bin found.'}))
+        return
+
+    issues = []
+    info = []
+    entries = index.get('entries', {})
+
+    # Check 1: Index entries -> files on disk
+    missing_files = []
+    for eid, entry_info in entries.items():
+        fpath = alpha_dir / entry_info['file'].replace('/', os.sep)
+        if not fpath.exists():
+            missing_files.append(eid)
+    if missing_files:
+        issues.append(f"Index entries with missing files: {len(missing_files)}")
+        for eid in missing_files[:10]:
+            issues.append(f"  Missing: {eid} -> {entries[eid]['file']}")
+
+    # Check 2: Files on disk -> index entries
+    indexed_files = {e['file'] for e in entries.values()}
+    orphan_files = []
+    for root, dirs, files in os.walk(alpha_dir):
+        for fname in files:
+            if not fname.endswith('.md'):
+                continue
+            fpath = Path(root) / fname
+            rel = str(fpath.relative_to(alpha_dir)).replace(os.sep, '/')
+            if rel not in indexed_files:
+                # Framework files are indexed by group, not by individual entry
+                # Check if it's a framework group file
+                if rel.startswith('_framework/'):
+                    group_name = fname[:-3]
+                    # Verify group is in sources
+                    fw_sources = index.get('sources', {}).get('_framework', {})
+                    if group_name in fw_sources.get('groups', []):
+                        continue  # Expected framework file
+                orphan_files.append(rel)
+    if orphan_files:
+        issues.append(f"Orphan files (on disk but not in index): {len(orphan_files)}")
+        for f in orphan_files[:10]:
+            issues.append(f"  Orphan: {f}")
+
+    # Check 3: Schema consistency
+    missing_fields = 0
+    for eid, entry_info in entries.items():
+        if not entry_info.get('source'):
+            missing_fields += 1
+            issues.append(f"  {eid}: missing 'source' field")
+        if not entry_info.get('file'):
+            missing_fields += 1
+            issues.append(f"  {eid}: missing 'file' field")
+    if missing_fields:
+        issues.insert(0, f"Schema issues: {missing_fields} entries with missing fields")
+
+    # Summary
+    summary = index.get('summary', {})
+    info.append(f"Framework entries: {summary.get('total_framework', 0)}")
+    info.append(f"Cross-source entries: {summary.get('total_cross_source', 0)}")
+    info.append(f"Convergence web entries: {summary.get('total_convergence_web', 0)}")
+    info.append(f"Source folders: {summary.get('total_sources', 0)}")
+    info.append(f"Schema version: {index.get('schema_version', '?')}")
+
+    result = {
+        'status': 'ok' if not issues else 'issues_found',
+        'issues': issues,
+        'info': info,
+        'summary': summary
+    }
+    print(json.dumps(result, indent=2))
+
+    if issues:
+        print(f"\n{len(issues)} issue(s) found:", file=sys.stderr)
+        for i in issues:
+            print(f"  ! {i}", file=sys.stderr)
+    else:
+        print("Alpha bin integrity check passed.", file=sys.stderr)
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -1326,6 +1648,30 @@ def main():
     p_archive.add_argument('--entry-ids', nargs='*', default=None,
                            help='Specific entry IDs to archive (e.g., c:7 c:12)')
     p_archive.set_defaults(func=cmd_archive)
+
+    # --- alpha-read ---
+    p_alpha_read = subparsers.add_parser('alpha-read',
+        help='Read alpha bin summary (reference memory index)')
+    p_alpha_read.add_argument('--buffer-dir', required=True, help='Path to buffer directory')
+    p_alpha_read.set_defaults(func=cmd_alpha_read)
+
+    # --- alpha-query ---
+    p_alpha_query = subparsers.add_parser('alpha-query',
+        help='Query alpha bin for referents by ID, source, or concept')
+    p_alpha_query.add_argument('--buffer-dir', required=True, help='Path to buffer directory')
+    p_alpha_query.add_argument('--id', nargs='+', default=None,
+                               help='Retrieve entries by ID (e.g., w:218 cw:83)')
+    p_alpha_query.add_argument('--source', default=None,
+                               help='Search by source name (case-insensitive prefix match)')
+    p_alpha_query.add_argument('--concept', default=None,
+                               help='Search by concept name (case-insensitive partial match)')
+    p_alpha_query.set_defaults(func=cmd_alpha_query)
+
+    # --- alpha-validate ---
+    p_alpha_val = subparsers.add_parser('alpha-validate',
+        help='Validate alpha bin integrity (index vs files on disk)')
+    p_alpha_val.add_argument('--buffer-dir', required=True, help='Path to buffer directory')
+    p_alpha_val.set_defaults(func=cmd_alpha_validate)
 
     args = parser.parse_args()
     if not args.command:

@@ -13,7 +13,8 @@ You are running `/buffer:on`. Reconstruct context from the sigma trunk so you ca
 work effectively without the user re-explaining everything.
 
 The sigma trunk has three layers: Hot (~200 lines, always loaded), Warm (~500 lines,
-selectively loaded via pointers), Cold (~500 lines, on-demand only). Load the minimum
+selectively loaded via pointers), Cold (~500 lines, on-demand only), plus an optional
+Alpha bin (reference memory — static, query-on-demand, no size cap). Load the minimum
 needed to orient.
 
 **Key principles**:
@@ -31,8 +32,13 @@ needed to orient.
 **`scripts/buffer_manager.py`** (plugin-relative) handles mechanical sigma trunk operations. Use it instead of manually parsing JSON.
 
 - `read --buffer-dir .claude/buffer/` — Parse hot layer, resolve warm pointers (tombstones, redirects), output formatted reconstruction. Covers Steps 1, 3, 4. Add `--warm-max N` for project overrides.
-- `validate --buffer-dir .claude/buffer/` — Check layer sizes, schema version, required fields.
-- `next-id --buffer-dir .claude/buffer/ --layer warm` — Get next sequential ID.
+- `validate --buffer-dir .claude/buffer/` — Check layer sizes, schema version, required fields, alpha integrity.
+- `next-id --buffer-dir .claude/buffer/ --layer warm` — Get next sequential ID (scans alpha too to prevent collisions).
+- `alpha-read --buffer-dir .claude/buffer/` — Read alpha bin index, output summary. For Step 1b.
+- `alpha-query --buffer-dir .claude/buffer/ --id w:218` — Retrieve specific referent by ID. For Step 4 pointer resolution.
+- `alpha-query --buffer-dir .claude/buffer/ --source Sartre` — List all entries from a source.
+- `alpha-query --buffer-dir .claude/buffer/ --concept totalization` — Search by concept name.
+- `alpha-validate --buffer-dir .claude/buffer/` — Check alpha bin integrity (index vs files on disk).
 
 **Manual steps**: git grounding (2), full-scan check (5), instance notes presentation (6), MEMORY.md (7), autosave arming (8).
 
@@ -187,6 +193,31 @@ Read `.claude/buffer/handoff.json` (~200 lines). This is the only mandatory read
 
 - If `schema_version` is missing or < 2, inform the user: "Found v1 sigma trunk. Run `/buffer:off` first to migrate to v2 format."
 
+### Step 1b: Alpha bin detection
+
+> **Mode gate: Full only.** Lite mode has no reference memory — skip.
+
+Check for alpha bin (reference memory separated from working memory):
+
+```bash
+scripts/buffer_manager.py alpha-read --buffer-dir .claude/buffer/
+```
+
+**If alpha exists**, present a one-line summary:
+```
+Alpha: N referents across M sources (fw: X, cs: Y, cw: Z)
+```
+
+Do **not** load any alpha content yet — individual referents are loaded on-demand via
+pointer resolution (Step 4) or explicit `alpha-query`. The index is lightweight metadata
+only.
+
+**If alpha does not exist** and warm layer is over its cap, note:
+```
+Note: Warm layer is over cap. Consider running the alpha migration to separate
+reference memory from session state.
+```
+
 ### Step 2: Git grounding
 
 Ground the session in actual repo state:
@@ -234,14 +265,15 @@ Selective loading from warm/cold layers using the pointer-index system:
 
 **For each entry in `concept_map_digest.flagged` and `concept_map_digest.recent_changes`:**
 
-1. Collect all referenced IDs from `"see"` arrays (these will be `w:N` warm-layer IDs)
-2. Read `handoff-warm.json` and extract ONLY the entries matching those IDs
-3. If a warm entry has `"see_also"` references, read `handoff-cold.json` and extract those entries
-4. **Max cascade depth: 3** (hot -> warm -> cold, then stop)
-5. **Visited set**: track all followed IDs to prevent circular references
-6. **Broken ref**: if an ID is not found in the target file, log `"Broken reference: [id] not found in [layer]"` and continue
-7. **Tombstone**: if an entry has `"archived_to"`, note: `"[id] was archived to [tower file]. Ask user if retrieval is needed."`
-8. **Redirect tombstone**: if an entry has `"migrated_to"`, follow the redirect to the indicated layer and load the target entry
+1. Collect all referenced IDs from `"see"` arrays (these will be `w:N` or `cw:N` IDs)
+2. **Check alpha index first** — run `alpha-query --id [id]` to retrieve from alpha bin. Most `w:N` and `cw:N` IDs live in alpha after migration.
+3. **Fall back to warm** — if not in alpha, read `handoff-warm.json` and extract matching entries
+4. If a warm entry has `"see_also"` references, read `handoff-cold.json` and extract those entries
+5. **Max cascade depth: 3** (hot -> alpha/warm -> cold, then stop)
+6. **Visited set**: track all followed IDs to prevent circular references
+7. **Broken ref**: if an ID is not found in any layer or alpha, log `"Broken reference: [id] not found"` and continue
+8. **Tombstone**: if an entry has `"archived_to"`, note: `"[id] was archived to [tower file]. Ask user if retrieval is needed."`
+9. **Redirect tombstone**: if an entry has `"migrated_to"`, follow the redirect to the indicated layer and load the target entry
 
 **For each `open_thread` with `"see"` pointers:**
 - Follow into warm layer, present relevant context
@@ -326,7 +358,7 @@ Compute the gap between today and `session_meta.date` from the hot layer.
 Tell the user:
 
 ```
-buffer v0.1.5 | [scope] mode
+buffer v0.2.0 | [scope] mode | Alpha: N referents (if present)
 Context reconstructed from [date] handoff ([N days ago]). Ready to continue from [current_phase].
 Autosave armed — sigma trunk will stay current throughout the session.
 ```

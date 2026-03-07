@@ -2,6 +2,30 @@
 
 All notable changes to buffer are documented here.
 
+## [0.2.0] - 2026-03-07
+
+### Added
+- **Alpha bin** — separates reference memory (static, query-on-demand, no decay) from working memory (dynamic, session-facing, bounded, appropriate decay)
+- `migrate_to_alpha.py` — one-time migration script to decompose warm layer concept_map/convergence_web into individual referent files under `alpha/`
+- `alpha-read` command — read alpha bin index, output summary
+- `alpha-query` command — retrieve referents by ID, source, or concept (loads individual files on demand)
+- `alpha-validate` command — check alpha bin integrity (index vs files on disk)
+- `rebuild_index` capability — self-healing index reconstruction from files on disk
+- Schema normalization layer — handles variant entry schemas (key vs source field, missing attribution, ref-inferred routing)
+
+### Changed
+- `next-id` now scans both warm layer AND alpha bin to prevent ID collisions
+- `validate` now includes alpha bin status and resolves see-refs against alpha
+- Compact hook summary includes alpha bin referent count
+- Architecture doc updated with alpha layer table and design documentation
+- Distill skills (global + project) write to alpha bin when present, fall back to warm
+- Buffer on/off skills updated for alpha-aware pointer resolution and consolidation
+
+### Impact
+- Warm layer shrinks from ~3,680 lines to ~274 lines (on sigma-TAP project)
+- `/buffer:on` no longer loads ~52K tokens of reference material by default
+- Individual referent files (30-80 lines each) loaded on demand via `alpha-query`
+
 ## [0.1.5] - 2026-03-06
 
 ### Changed

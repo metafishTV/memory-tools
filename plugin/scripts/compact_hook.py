@@ -379,7 +379,23 @@ def build_compact_summary(hot, buffer_dir, warm_max):
     except (FileNotFoundError, OSError):
         pass
 
-    lines.append(f"## Layer Sizes: Hot {hot_lines}/200 | Warm {warm_lines}/{warm_max} | Cold {cold_lines}/500")
+    # --- Alpha bin status ---
+    alpha_idx_path = os.path.join(buffer_dir, 'alpha', 'index.json')
+    alpha_summary = ''
+    if os.path.exists(alpha_idx_path):
+        try:
+            with open(alpha_idx_path, 'r', encoding='utf-8') as f:
+                alpha_idx = json.load(f)
+            alpha_s = alpha_idx.get('summary', {})
+            fw = alpha_s.get('total_framework', 0)
+            cs = alpha_s.get('total_cross_source', 0)
+            cw = alpha_s.get('total_convergence_web', 0)
+            sources = alpha_s.get('total_sources', 0)
+            alpha_summary = f" | Alpha: {fw + cs + cw} refs ({sources} sources)"
+        except (json.JSONDecodeError, OSError):
+            alpha_summary = ' | Alpha: present (index unreadable)'
+
+    lines.append(f"## Layer Sizes: Hot {hot_lines}/200 | Warm {warm_lines}/{warm_max} | Cold {cold_lines}/500{alpha_summary}")
     lines.append("")
 
     # --- Distill-in-progress detection ---
