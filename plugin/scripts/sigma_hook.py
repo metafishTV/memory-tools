@@ -9,7 +9,8 @@ Fires on every user message. Cascades through sigma layers:
 Gates (exit-early, zero token cost):
   1. Suppress list: .sigma_suppress file lists concepts/threads to ignore
   2. Staleness gate: skip hot level when buffer already loaded this session
-  3. AND-logic scoring: require 2+ keyword matches for confidence
+  3. IDF-weighted scoring: keyword weight = 1/n (n = concept matches in corpus)
+  4. Scaling threshold: longer prompts need higher total weight to fire
 
 Cascade levels:
   1. Hot layer — active_work, open_threads, decisions, why_keys
@@ -18,6 +19,16 @@ Cascade levels:
 Output format (ultra-minimal):
   sigma hot: thread: [noted] R&B deep review.
   sigma alpha: w:62 alterity (Levinas) | w:73 rhizomatic (DG)
+
+Scoring model:
+  IDF weight per keyword = 1 / max(1, num_concepts_matched)
+    "alterity" matches 1 concept  → weight 1.0
+    "structure" matches 12 concepts → weight 0.08
+    "review" matches 0 concepts   → weight 0.0
+  Threshold = 0.8 + 0.08 * num_keywords (scales with prompt size)
+    3 keywords  → threshold 1.04
+    10 keywords → threshold 1.60
+    15 keywords → threshold 2.00
 
 Design constraints:
   - Max 3 entries injected total
@@ -48,7 +59,10 @@ MIN_WORD_LEN = 4      # skip short words
 SCORE_EXACT = 3       # exact match weight
 SCORE_SUBSTRING = 1   # substring match weight
 MIN_SCORE = 2         # minimum score to qualify for alpha
-MIN_KEYWORD_HITS = 2  # AND-gate: require 2+ distinct keywords matching
+
+# IDF threshold scaling: threshold = BASE + SCALE * num_keywords
+THRESHOLD_BASE = 0.8   # minimum weight for short prompts
+THRESHOLD_SCALE = 0.08 # additional weight required per keyword
 
 # Common words to skip
 STOPWORDS = frozenset({
@@ -167,6 +181,63 @@ def is_hot_stale(buffer_dir):
 
 
 # ---------------------------------------------------------------------------
+# GATE 3: IDF weighting + scaling threshold
+# ---------------------------------------------------------------------------
+
+def compute_idf_weights(keywords, concept_index):
+    """Compute information weight per keyword using corpus frequency.
+
+    Distinguishes exact concept matches (high signal) from substring
+    matches (incidental, low signal):
+      - Exact match:    weight contribution = 1.0 / num_exact_matches
+      - Substring match: weight contribution = 0.25 / num_substring_matches
+
+    "alterity" (1 exact match)  → weight 1.0  (specific, real concept)
+    "deep"     (0 exact, 1 sub) → weight 0.25 (incidental substring)
+    "review"   (0 matches)      → weight 0.0  (noise)
+
+    Returns dict of keyword → float weight.
+    """
+    weights = {}
+
+    for kw in keywords:
+        exact_matches = 0
+        substring_matches = 0
+
+        for concept_key in concept_index:
+            if concept_key == '?':
+                continue
+            concept_lower = concept_key.lower()
+            if kw == concept_lower:
+                exact_matches += 1
+            elif kw in concept_lower or concept_lower in kw:
+                substring_matches += 1
+
+        # Exact matches dominate: the keyword IS a concept
+        # Substring matches are weak: "deep" in "some_deep_concept"
+        weight = 0.0
+        if exact_matches > 0:
+            weight += 1.0 / exact_matches
+        if substring_matches > 0:
+            weight += 0.25 / substring_matches
+
+        weights[kw] = weight
+
+    return weights
+
+
+def confidence_threshold(num_keywords):
+    """Compute minimum total IDF weight needed to fire injection.
+
+    Scales linearly with keyword count — longer prompts need stronger
+    evidence to avoid shotgun matching.
+
+    Returns float threshold.
+    """
+    return THRESHOLD_BASE + THRESHOLD_SCALE * num_keywords
+
+
+# ---------------------------------------------------------------------------
 # Keyword extraction
 # ---------------------------------------------------------------------------
 
@@ -216,12 +287,13 @@ def word_match(keyword, text_lower):
     return bool(re.search(r'\b' + re.escape(keyword) + r'\b', text_lower))
 
 
-def match_hot(keywords, hot, suppress_list):
-    """Match keywords against hot layer fields.
+def match_hot(keywords, hot, suppress_list, idf_weights, threshold):
+    """Match keywords against hot layer fields using IDF-weighted scoring.
 
     Checks: active_work, open_threads, recent_decisions, orientation.why_keys.
     Uses word-boundary matching to avoid false positives.
     Filters suppressed entries.
+    Requires total IDF weight of matching keywords >= threshold.
     Returns list of (label, text) hits, max MAX_INJECT.
     """
     if not keywords or not hot:
@@ -237,8 +309,12 @@ def match_hot(keywords, hot, suppress_list):
             if is_suppressed(val, suppress_list):
                 continue
             val_lower = val.lower()
-            matched_kws = [kw for kw in keywords if word_match(kw, val_lower)]
-            if len(matched_kws) >= MIN_KEYWORD_HITS:
+            total_weight = sum(
+                idf_weights.get(kw, 0.0)
+                for kw in keywords
+                if word_match(kw, val_lower)
+            )
+            if total_weight >= threshold:
                 hits.append(('active', f"{field}: {val}"))
 
     # --- open_threads ---
@@ -250,8 +326,12 @@ def match_hot(keywords, hot, suppress_list):
             if is_suppressed(thread_text, suppress_list):
                 continue
             thread_lower = thread_text.lower()
-            matched_kws = [kw for kw in keywords if word_match(kw, thread_lower)]
-            if len(matched_kws) >= MIN_KEYWORD_HITS:
+            total_weight = sum(
+                idf_weights.get(kw, 0.0)
+                for kw in keywords
+                if word_match(kw, thread_lower)
+            )
+            if total_weight >= threshold:
                 hits.append(('thread', f"[{status}] {thread_text}"))
 
     # --- recent_decisions ---
@@ -263,12 +343,16 @@ def match_hot(keywords, hot, suppress_list):
         if is_suppressed(combined, suppress_list):
             continue
         combined_lower = combined.lower()
-        matched_kws = [kw for kw in keywords if word_match(kw, combined_lower)]
-        if len(matched_kws) >= MIN_KEYWORD_HITS:
+        total_weight = sum(
+            idf_weights.get(kw, 0.0)
+            for kw in keywords
+            if word_match(kw, combined_lower)
+        )
+        if total_weight >= threshold:
             hits.append(('decision', f"{what} -> {chose}"))
 
     # --- orientation.why_keys (source names — single keyword ok here,
-    #     these are short and high-signal) ---
+    #     these are short and high-signal, exempt from threshold) ---
     why_keys = hot.get('orientation', {}).get('why_keys', [])
     matched_sources = []
     for wk in why_keys:
@@ -300,13 +384,16 @@ def format_hot_hits(hits):
 # CASCADE LEVEL 2: Alpha concept matching (fallthrough)
 # ---------------------------------------------------------------------------
 
-def match_alpha_concepts(keywords, concept_index, suppress_list):
-    """Match keywords against alpha concept_index keys.
+def match_alpha_concepts(keywords, concept_index, suppress_list,
+                          idf_weights, threshold):
+    """Match keywords against alpha concept_index keys with IDF weighting.
 
-    AND-gate: requires 2+ distinct keyword hits per concept (exact match
-    counts as 2 by itself since it's high confidence).
+    For each concept, sums the IDF weight of matching keywords.
+    Exact match gets the keyword's full IDF weight * SCORE_EXACT multiplier.
+    Substring match gets IDF weight * SCORE_SUBSTRING.
+    Requires total weighted score >= threshold.
     Filters suppressed concepts.
-    Returns list of (concept_key, work_ids, score) sorted by score desc.
+    Returns list of (concept_key, work_ids, weighted_score) sorted desc.
     """
     if not keywords or not concept_index:
         return []
@@ -320,20 +407,19 @@ def match_alpha_concepts(keywords, concept_index, suppress_list):
             continue
 
         concept_lower = concept_key.lower()
-        score = 0
-        distinct_hits = 0
+        weighted_score = 0.0
 
         for kw in keywords:
+            w = idf_weights.get(kw, 0.0)
+            if w == 0.0:
+                continue
             if kw == concept_lower:
-                score += SCORE_EXACT
-                distinct_hits += 2  # exact match = high confidence, counts as 2
+                weighted_score += w * SCORE_EXACT
             elif kw in concept_lower or concept_lower in kw:
-                score += SCORE_SUBSTRING
-                distinct_hits += 1
+                weighted_score += w * SCORE_SUBSTRING
 
-        # AND-gate: need sufficient score AND distinct keyword evidence
-        if score >= MIN_SCORE and distinct_hits >= MIN_KEYWORD_HITS:
-            scores[concept_key] = (work_ids, score)
+        if weighted_score >= threshold:
+            scores[concept_key] = (work_ids, weighted_score)
 
     ranked = sorted(scores.items(), key=lambda x: x[1][1], reverse=True)
     return [(key, ids, sc) for key, (ids, sc) in ranked[:MAX_INJECT]]
@@ -397,13 +483,24 @@ def main():
     # GATE 1: Load suppress list (zero cost if file absent)
     suppress_list = load_suppress_list(buffer_dir)
 
+    # Load alpha index once (needed for IDF computation + Level 2 matching)
+    alpha_path = os.path.join(buffer_dir, 'alpha', 'index.json')
+    alpha_idx = read_json(alpha_path)
+    concept_index = alpha_idx.get('concept_index', {}) if alpha_idx else {}
+    sources_data = alpha_idx.get('sources', {}) if alpha_idx else {}
+
+    # GATE 3: Compute IDF weights + scaling threshold
+    idf_weights = compute_idf_weights(keywords, concept_index)
+    threshold = confidence_threshold(len(keywords))
+
     # -----------------------------------------------------------------------
     # LEVEL 1: Hot layer check (cheapest — skipped if buffer already loaded)
     # -----------------------------------------------------------------------
     if not is_hot_stale(buffer_dir):
         hot = read_json(os.path.join(buffer_dir, 'handoff.json'))
         if hot:
-            hot_hits = match_hot(keywords, hot, suppress_list)
+            hot_hits = match_hot(keywords, hot, suppress_list,
+                                  idf_weights, threshold)
             if hot_hits:
                 injection = format_hot_hits(hot_hits)
                 emit({"suppressOutput": True, "systemMessage": injection})
@@ -411,15 +508,12 @@ def main():
     # -----------------------------------------------------------------------
     # LEVEL 2: Alpha concept index (fallthrough — hot skipped or missed)
     # -----------------------------------------------------------------------
-    alpha_path = os.path.join(buffer_dir, 'alpha', 'index.json')
-    alpha_idx = read_json(alpha_path)
-    if not alpha_idx:
+    if not concept_index:
         emit_empty()
 
-    concept_index = alpha_idx.get('concept_index', {})
-    sources_data = alpha_idx.get('sources', {})
-
-    concept_matches = match_alpha_concepts(keywords, concept_index, suppress_list)
+    concept_matches = match_alpha_concepts(keywords, concept_index,
+                                            suppress_list, idf_weights,
+                                            threshold)
     if not concept_matches:
         emit_empty()
 
