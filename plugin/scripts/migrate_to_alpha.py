@@ -21,7 +21,8 @@ import argparse
 from pathlib import Path
 from datetime import date
 
-if sys.platform == 'win32':
+# Guard: only wrap when running as main script, not when imported by tests
+if sys.platform == 'win32' and __name__ == '__main__':
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 

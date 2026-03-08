@@ -2,6 +2,31 @@
 
 All notable changes to buffer are documented here.
 
+## [1.0.0] - 2026-03-07
+
+### Added
+- **Distill companion plugin** — source distillation extracted from monolithic skill into standalone `distill` plugin with 4 sub-skills: `differentiate`, `extract`, `analyze`, `integrate`
+- **Alpha existence guards** — all alpha bin wiring in sigma_hook, on/off skills gated behind `os.path.isdir(alpha_dir)`. Buffer works without alpha (hot/warm/cold only); installing distill and running first distillation lights up alpha automatically
+- **Post-compaction relay** — PreCompact writes `.compact_marker`, next UserPromptSubmit detects it and injects full buffer recovery into context, then erases marker. Closes mid-session compaction gap
+- **Compact hook import guard** — `__name__ == '__main__'` guard on UTF-8 stream wrapping prevents IO corruption when sigma_hook imports compact_hook via importlib
+- **Marketplace publishing** — both buffer and distill plugins listed in `.claude-plugin/marketplace.json`
+
+### Changed
+- Plugin version bumped to 1.0.0
+- Global distill skill (`~/.claude/skills/distill/SKILL.md`) retired to 16-line redirect pointing users to the distill plugin
+- Sigma hook gate numbering: Gate 0a = compact relay, Gate 0b = distill-active
+
+## [0.3.0] - 2026-03-07
+
+### Added
+- **Dynamic scalar config** — layer limits (hot_max, warm_max, cold_max) stored in handoff.json as data, overridable per-project in skill config
+- **Distill-active gate** — sigma_hook detects `.distill_active` marker to inject relevant alpha context during active distillation sessions
+- **Configurable layer limits** — `detect_layer_limits()` and `resolve_limits()` in buffer_manager.py read project-level overrides from on.md skill config; CLI flags override everything
+
+### Changed
+- buffer_manager.py uses `resolve_limits(args)` consistently instead of hardcoded constants
+- compact_hook.py reads project-level layer limits for accurate compact summaries
+
 ## [0.2.0] - 2026-03-07
 
 ### Added

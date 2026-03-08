@@ -70,31 +70,34 @@ def read_hook_input():
 
 
 def detect_layer_limits(cwd):
-    """Check project skill config for hot-max, warm-max, cold-max overrides.
+    """Check project configs for hot-max, warm-max, cold-max overrides.
+
+    Checks (later source wins):
+      1. .claude/skills/buffer/on.md (project skill config)
+      2. .claude/buffer.local.md (userconfig)
 
     Returns (hot_max, warm_max, cold_max) with defaults for any not overridden.
     """
     import re
-    hot_max, warm_max, cold_max = 200, 500, 500
-    project_on = os.path.join(cwd, '.claude', 'skills', 'buffer', 'on.md')
-    if os.path.exists(project_on):
+    limits = {'hot': 200, 'warm': 500, 'cold': 500}
+    for filepath in [
+        os.path.join(cwd, '.claude', 'skills', 'buffer', 'on.md'),
+        os.path.join(cwd, '.claude', 'buffer.local.md'),
+    ]:
+        if not os.path.exists(filepath):
+            continue
         try:
-            with open(project_on, 'r', encoding='utf-8') as f:
+            with open(filepath, 'r', encoding='utf-8') as f:
                 content = f.read()
-            for layer, default in [('hot', 200), ('warm', 500), ('cold', 500)]:
+            for layer in ('hot', 'warm', 'cold'):
                 match = re.search(
-                    rf'{layer}[_\s]*max[^:]*?(\d+)', content, re.IGNORECASE
+                    rf'{layer}[_\s-]*max[^:\d]*:?\s*(\d+)', content, re.IGNORECASE
                 )
                 if match:
-                    if layer == 'hot':
-                        hot_max = int(match.group(1))
-                    elif layer == 'warm':
-                        warm_max = int(match.group(1))
-                    elif layer == 'cold':
-                        cold_max = int(match.group(1))
+                    limits[layer] = int(match.group(1))
         except OSError:
             pass
-    return hot_max, warm_max, cold_max
+    return limits['hot'], limits['warm'], limits['cold']
 
 
 # ---------------------------------------------------------------------------

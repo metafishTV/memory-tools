@@ -34,7 +34,8 @@ from pathlib import Path
 from datetime import date
 
 # Force UTF-8 stdout/stderr on Windows (buffer data may contain unicode)
-if sys.platform == 'win32':
+# Guard: only wrap when running as main script, not when imported by tests
+if sys.platform == 'win32' and __name__ == '__main__':
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
@@ -58,13 +59,43 @@ SCOPE_MAP = {
 }
 
 
+def is_full_mode(mode):
+    """Check if buffer mode supports full features (concept maps, convergence webs)."""
+    return mode in ('project', 'full')
+
+
+def is_active_mode(mode):
+    """Check if buffer mode supports active work tracking (decisions, threads, notes)."""
+    return mode in ('memory', 'project', 'full', 'lite', 'unknown')
+
+
+def _parse_limits_from_file(filepath, limits):
+    """Parse layer limits from a file (skill config or userconfig).
+
+    Looks for lines like: hot_max: 250, warm-max: 800, cold_max: 750
+    Updates limits dict in place for any found values.
+    """
+    if not os.path.exists(filepath):
+        return
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            content = f.read()
+        for layer in ('hot', 'warm', 'cold'):
+            match = re.search(
+                rf'{layer}[_\s-]*max[^:\d]*:?\s*(\d+)', content, re.IGNORECASE
+            )
+            if match:
+                limits[layer] = int(match.group(1))
+    except OSError:
+        pass
+
+
 def detect_layer_limits(cwd):
     """Detect project-level overrides for hot-max, warm-max, cold-max.
 
-    Scans .claude/skills/buffer/on.md (project skill config) for lines like:
-      hot-max: 250
-      warm-max: 800
-      cold-max: 750
+    Checks two sources (later source wins):
+      1. .claude/skills/buffer/on.md (project skill config)
+      2. .claude/buffer.local.md (userconfig — takes precedence)
 
     Returns dict with resolved limits (defaults for any not overridden).
     """
@@ -73,20 +104,12 @@ def detect_layer_limits(cwd):
         'warm': WARM_MAX_LINES_DEFAULT,
         'cold': COLD_MAX_LINES,
     }
-    project_on = os.path.join(cwd, '.claude', 'skills', 'buffer', 'on.md')
-    if not os.path.exists(project_on):
-        return limits
-    try:
-        with open(project_on, 'r', encoding='utf-8') as f:
-            content = f.read()
-        for layer in ('hot', 'warm', 'cold'):
-            match = re.search(
-                rf'{layer}[_\s]*max[^:]*?(\d+)', content, re.IGNORECASE
-            )
-            if match:
-                limits[layer] = int(match.group(1))
-    except OSError:
-        pass
+    # Project skill config (base)
+    _parse_limits_from_file(
+        os.path.join(cwd, '.claude', 'skills', 'buffer', 'on.md'), limits)
+    # Userconfig (overrides skill config)
+    _parse_limits_from_file(
+        os.path.join(cwd, '.claude', 'buffer.local.md'), limits)
     return limits
 
 
@@ -223,55 +246,49 @@ def resolve_see_refs(hot: dict, warm: dict, cold: dict) -> list:
 
     refs.discard('')
 
-    # Resolve each ref
+    # Build lookup dicts for O(1) resolution instead of linear scans
     resolved = []
-    warm_entries = collect_all_entries(warm, 'w:')
-    cold_entries = collect_all_entries(cold, 'c:')
-    cw_entries = warm.get('convergence_web', {}).get('entries', [])
+    warm_by_id = {e['id']: e for e in collect_all_entries(warm, 'w:') if 'id' in e}
+    cold_by_id = {e['id']: e for e in collect_all_entries(cold, 'c:') if 'id' in e}
+    cw_by_id = {e['id']: e for e in warm.get('convergence_web', {}).get('entries', []) if 'id' in e}
 
     for ref_id in sorted(refs):
         entry = None
         source = None
 
         # Check warm
-        for e in warm_entries:
-            if e.get('id') == ref_id:
-                # Check for tombstone/redirect
-                if 'migrated_to' in e:
-                    # Follow redirect to cold
-                    cold_id = e['migrated_to']
-                    for ce in cold_entries:
-                        if ce.get('id') == cold_id:
-                            entry = ce
-                            source = f"cold (via redirect from {ref_id})"
-                            break
-                    if not entry:
-                        entry = e
-                        source = "warm (redirect — target not found in cold)"
+        w = warm_by_id.get(ref_id)
+        if w:
+            if 'migrated_to' in w:
+                # Follow redirect to cold
+                cold_target = cold_by_id.get(w['migrated_to'])
+                if cold_target:
+                    entry = cold_target
+                    source = f"cold (via redirect from {ref_id})"
                 else:
-                    entry = e
-                    source = "warm"
-                break
+                    entry = w
+                    source = "warm (redirect — target not found in cold)"
+            else:
+                entry = w
+                source = "warm"
 
         # Check convergence web
         if not entry:
-            for e in cw_entries:
-                if e.get('id') == ref_id:
-                    entry = e
-                    source = "convergence_web"
-                    break
+            cw = cw_by_id.get(ref_id)
+            if cw:
+                entry = cw
+                source = "convergence_web"
 
         # Check cold
         if not entry:
-            for e in cold_entries:
-                if e.get('id') == ref_id:
-                    if 'archived_to' in e:
-                        entry = e
-                        source = f"cold (archived to tower-{e['archived_to']})"
-                    else:
-                        entry = e
-                        source = "cold"
-                    break
+            c = cold_by_id.get(ref_id)
+            if c:
+                if 'archived_to' in c:
+                    entry = c
+                    source = f"cold (archived to tower-{c['archived_to']})"
+                else:
+                    entry = c
+                    source = "cold"
 
         if entry:
             resolved.append({'ref': ref_id, 'source': source, 'entry': entry})
@@ -326,7 +343,7 @@ def cmd_read(args):
     ])))
 
     # Active work (memory + project modes)
-    if mode in ('memory', 'project', 'unknown'):
+    if is_active_mode(mode):
         aw = hot.get('active_work', {})
         if aw:
             lines = [f"Phase: {aw.get('current_phase', '?')}"]
@@ -351,7 +368,7 @@ def cmd_read(args):
         out.append(format_section("Orientation", '\n'.join(lines)))
 
     # Open threads (memory + project modes)
-    if mode in ('memory', 'project', 'unknown'):
+    if is_active_mode(mode):
         threads = hot.get('open_threads', [])
         if threads:
             lines = []
@@ -362,7 +379,7 @@ def cmd_read(args):
             out.append(format_section(f"Open Threads ({len(threads)})", '\n'.join(lines)))
 
     # Recent decisions (memory + project modes)
-    if mode in ('memory', 'project', 'unknown'):
+    if is_active_mode(mode):
         decs = hot.get('recent_decisions', [])
         if decs:
             lines = []
@@ -372,7 +389,7 @@ def cmd_read(args):
             out.append(format_section(f"Recent Decisions ({len(decs)})", '\n'.join(lines)))
 
     # Instance notes (memory + project modes)
-    if mode in ('memory', 'project', 'unknown'):
+    if is_active_mode(mode):
         notes = hot.get('instance_notes', {})
         if notes:
             lines = [f"From: {notes.get('from', '?')}"]
@@ -386,7 +403,7 @@ def cmd_read(args):
             out.append(format_section("Instance Notes", '\n'.join(lines)))
 
     # Concept map digest (project mode)
-    if mode in ('project', 'unknown'):
+    if is_full_mode(mode):
         cmd = hot.get('concept_map_digest', {})
         if cmd:
             meta_cm = cmd.get('_meta', {})
@@ -407,7 +424,7 @@ def cmd_read(args):
             out.append(format_section("Concept Map Digest", '\n'.join(lines)))
 
     # Convergence web digest (project mode)
-    if mode in ('project', 'unknown'):
+    if is_full_mode(mode):
         cwd = hot.get('convergence_web_digest', {})
         if cwd:
             meta_cw = cwd.get('_meta', {})
@@ -526,12 +543,12 @@ def cmd_update(args):
         report.append("Updated session_meta")
 
     # Active work (memory + project)
-    if mode in ('memory', 'project') and 'active_work' in changes:
+    if is_active_mode(mode) and 'active_work' in changes:
         hot['active_work'] = changes['active_work']
         report.append("Updated active_work")
 
     # New decisions -> append to recent_decisions (memory + project)
-    if mode in ('memory', 'project') and 'new_decisions' in changes:
+    if is_active_mode(mode) and 'new_decisions' in changes:
         if 'recent_decisions' not in hot:
             hot['recent_decisions'] = []
         for d in changes['new_decisions']:
@@ -541,12 +558,12 @@ def cmd_update(args):
         report.append(f"Added {len(changes['new_decisions'])} decisions")
 
     # Open threads — replace entirely (memory + project)
-    if mode in ('memory', 'project') and 'open_threads' in changes:
+    if is_active_mode(mode) and 'open_threads' in changes:
         hot['open_threads'] = changes['open_threads']
         report.append(f"Set {len(changes['open_threads'])} open threads")
 
     # Instance notes — replace entirely (memory + project)
-    if mode in ('memory', 'project') and 'instance_notes' in changes:
+    if is_active_mode(mode) and 'instance_notes' in changes:
         hot['instance_notes'] = changes['instance_notes']
         report.append("Updated instance_notes")
 
@@ -562,7 +579,7 @@ def cmd_update(args):
 
     # --- Warm layer updates (project mode) ---
 
-    if mode == 'project' and warm:
+    if is_full_mode(mode) and warm:
         # Concept map changes
         if 'concept_map_changes' in changes:
             concept_map = warm.get('concept_map', {})
@@ -748,7 +765,7 @@ def cmd_migrate(args):
 
     # --- Hot -> Warm migration ---
     hot_lines = count_json_lines(hot)
-    if hot_lines > hot_max and mode in ('memory', 'project'):
+    if hot_lines > hot_max and is_active_mode(mode):
         # Move oldest decisions to warm decisions_archive
         decisions = hot.get('recent_decisions', [])
         if len(decisions) > 2:
@@ -772,7 +789,7 @@ def cmd_migrate(args):
 
     # --- Warm -> Cold migration ---
     warm_lines = count_json_lines(warm) if warm else 0
-    if warm_lines > warm_max and mode in ('memory', 'project'):
+    if warm_lines > warm_max and is_active_mode(mode):
         # Migrate oldest decisions_archive entries
         archive = warm.get('decisions_archive', [])
         if len(archive) > 5:
@@ -913,9 +930,9 @@ def cmd_validate(args):
 
     # Required fields
     required_hot = ['session_meta', 'natural_summary', 'memory_config']
-    if mode in ('memory', 'project'):
+    if is_active_mode(mode):
         required_hot.extend(['active_work', 'open_threads', 'recent_decisions', 'instance_notes'])
-    if mode == 'project':
+    if is_full_mode(mode):
         required_hot.extend(['concept_map_digest', 'convergence_web_digest'])
 
     for field in required_hot:
@@ -925,7 +942,7 @@ def cmd_validate(args):
     # Pointer integrity (project mode)
     all_layer_ids = set()
     broken_refs = []
-    if mode == 'project' and warm:
+    if is_full_mode(mode) and warm:
         all_warm_ids = {e.get('id') for e in collect_all_entries(warm, 'w:') if e.get('id')}
         cw_ids = {e.get('id') for e in warm.get('convergence_web', {}).get('entries', []) if e.get('id')}
         all_layer_ids = all_warm_ids | cw_ids
@@ -964,7 +981,7 @@ def cmd_validate(args):
             issues.append("Hot layer has alpha_ref but alpha/index.json missing")
 
         # Pointer integrity: check see-refs against alpha too
-        if mode == 'project' and broken_refs:
+        if is_full_mode(mode) and broken_refs:
             all_alpha_ids = alpha_all_ids(alpha_idx)
             still_broken = [r for r in broken_refs if r not in all_alpha_ids]
             if len(still_broken) < len(broken_refs):
@@ -1138,40 +1155,28 @@ def cmd_next_id(args):
     layer_name = args.layer
     alpha_idx = read_alpha_index(buf_dir)
 
-    if layer_name == 'warm':
-        warm = read_json(buf_dir / 'handoff-warm.json')
-        entries = collect_all_entries(warm, 'w:')
-        warm_max = 0
-        pattern = re.compile(r'^w:(\d+)$')
-        for e in entries:
-            m = pattern.match(e.get('id', ''))
-            if m:
-                warm_max = max(warm_max, int(m.group(1)))
-        # Also check alpha for w: IDs
-        alpha_w_max = alpha_max_id(alpha_idx, 'w:') if alpha_idx else 0
-        final_max = max(warm_max, alpha_w_max)
-        print(f"w:{final_max + 1}")
-    elif layer_name == 'cold':
+    if layer_name == 'cold':
         cold = read_json(buf_dir / 'handoff-cold.json')
         entries = collect_all_entries(cold, 'c:')
         print(next_id_in_entries(entries, 'c:'))
-    elif layer_name == 'convergence':
-        warm = read_json(buf_dir / 'handoff-warm.json')
-        entries = warm.get('convergence_web', {}).get('entries', [])
-        warm_max = 0
-        pattern = re.compile(r'^cw:(\d+)$')
-        for e in entries:
-            m = pattern.match(e.get('id', ''))
-            if m:
-                warm_max = max(warm_max, int(m.group(1)))
-        # Also check alpha for cw: IDs
-        alpha_cw_max = alpha_max_id(alpha_idx, 'cw:') if alpha_idx else 0
-        final_max = max(warm_max, alpha_cw_max)
-        print(f"cw:{final_max + 1}")
+        return
+
+    # warm and convergence share the same pattern
+    prefix = 'w:' if layer_name == 'warm' else 'cw:'
+    warm = read_json(buf_dir / 'handoff-warm.json')
+    if layer_name == 'warm':
+        entries = collect_all_entries(warm, 'w:')
     else:
-        print(f"Error: unknown layer '{layer_name}'. Use: warm, cold, convergence",
-              file=sys.stderr)
-        sys.exit(1)
+        entries = warm.get('convergence_web', {}).get('entries', [])
+
+    layer_max = 0
+    pattern = re.compile(rf'^{re.escape(prefix)}(\d+)$')
+    for e in entries:
+        m = pattern.match(e.get('id', ''))
+        if m:
+            layer_max = max(layer_max, int(m.group(1)))
+    alpha_max = alpha_max_id(alpha_idx, prefix) if alpha_idx else 0
+    print(f"{prefix}{max(layer_max, alpha_max) + 1}")
 
 
 # ---------------------------------------------------------------------------
@@ -1449,6 +1454,19 @@ def make_convergence_web_md(entry):
     return '\n'.join(lines)
 
 
+def _parse_concept_key(concept_key):
+    """Parse concept_key into (concept_name, source_prefix) for index updates."""
+    if not concept_key or concept_key == '?':
+        return None, None
+    if ':' in concept_key:
+        parts = concept_key.split(':', 1)
+        prefix = parts[0].strip()
+        name = parts[1].strip().lower()
+        source_prefix = prefix if prefix and not prefix.startswith('_') else None
+        return name or None, source_prefix
+    return concept_key.strip().lower() or None, None
+
+
 def alpha_update_index(index, new_id, entry_type, source_folder, concept_key, filename):
     """Update all index structures for a new alpha entry.
 
@@ -1477,17 +1495,12 @@ def alpha_update_index(index, new_id, entry_type, source_folder, concept_key, fi
         src.setdefault(id_list_key, []).append(new_id)
     src['entry_count'] = len(src.get('cross_source_ids', [])) + len(src.get('convergence_web_ids', []))
 
-    # concept_index
-    if concept_key and concept_key != '?':
-        concept_name = concept_key.split(':')[1].strip().lower() if ':' in concept_key else concept_key.strip().lower()
-        if concept_name:
-            index.setdefault('concept_index', {}).setdefault(concept_name, []).append(new_id)
-
-    # source_index
-    if concept_key and ':' in concept_key:
-        prefix = concept_key.split(':')[0].strip()
-        if prefix and not prefix.startswith('_'):
-            index.setdefault('source_index', {}).setdefault(prefix, []).append(new_id)
+    # concept_index + source_index
+    concept_name, source_prefix = _parse_concept_key(concept_key)
+    if concept_name:
+        index.setdefault('concept_index', {}).setdefault(concept_name, []).append(new_id)
+    if source_prefix:
+        index.setdefault('source_index', {}).setdefault(source_prefix, []).append(new_id)
 
     # summary counts
     summary = index.setdefault('summary', {
@@ -1527,25 +1540,20 @@ def alpha_remove_from_index(index, entry_id):
         if src['entry_count'] == 0:
             index['sources'].pop(source_folder, None)
 
-    # concept_index
-    if concept_key and concept_key != '?':
-        concept_name = concept_key.split(':')[1].strip().lower() if ':' in concept_key else concept_key.strip().lower()
-        if concept_name:
-            clist = index.get('concept_index', {}).get(concept_name, [])
-            if entry_id in clist:
-                clist.remove(entry_id)
-            if not clist:
-                index.get('concept_index', {}).pop(concept_name, None)
-
-    # source_index
-    if concept_key and ':' in concept_key:
-        prefix = concept_key.split(':')[0].strip()
-        if prefix and not prefix.startswith('_'):
-            slist = index.get('source_index', {}).get(prefix, [])
-            if entry_id in slist:
-                slist.remove(entry_id)
-            if not slist:
-                index.get('source_index', {}).pop(prefix, None)
+    # concept_index + source_index
+    concept_name, source_prefix = _parse_concept_key(concept_key)
+    if concept_name:
+        clist = index.get('concept_index', {}).get(concept_name, [])
+        if entry_id in clist:
+            clist.remove(entry_id)
+        if not clist:
+            index.get('concept_index', {}).pop(concept_name, None)
+    if source_prefix:
+        slist = index.get('source_index', {}).get(source_prefix, [])
+        if entry_id in slist:
+            slist.remove(entry_id)
+        if not slist:
+            index.get('source_index', {}).pop(source_prefix, None)
 
     # summary counts
     summary = index.get('summary', {})
@@ -2074,86 +2082,79 @@ def main():
     )
     subparsers = parser.add_subparsers(dest='command', help='Subcommand')
 
+    # Shared parent parsers to avoid repeating common arguments
+    buf_parent = argparse.ArgumentParser(add_help=False)
+    buf_parent.add_argument('--buffer-dir', required=True, help='Path to buffer directory')
+
+    limits_parent = argparse.ArgumentParser(add_help=False)
+    limits_parent.add_argument('--warm-max', type=int, default=None, help='Warm layer max lines')
+    limits_parent.add_argument('--hot-max', type=int, default=None, help='Hot layer max lines')
+    limits_parent.add_argument('--cold-max', type=int, default=None, help='Cold layer max lines')
+
     # --- read ---
-    p_read = subparsers.add_parser('read', help='Reconstruct context from buffer layers')
-    p_read.add_argument('--buffer-dir', required=True, help='Path to buffer directory')
-    p_read.add_argument('--warm-max', type=int, default=None, help='Warm layer max lines')
-    p_read.add_argument('--hot-max', type=int, default=None, help='Hot layer max lines')
-    p_read.add_argument('--cold-max', type=int, default=None, help='Cold layer max lines')
+    p_read = subparsers.add_parser('read', parents=[buf_parent, limits_parent],
+        help='Reconstruct context from buffer layers')
     p_read.set_defaults(func=cmd_read)
 
     # --- update ---
-    p_update = subparsers.add_parser('update',
+    p_update = subparsers.add_parser('update', parents=[buf_parent],
         help='Merge alpha stash (session changes) into buffer layers')
-    p_update.add_argument('--buffer-dir', required=True, help='Path to buffer directory')
     p_update.add_argument('--input', default=None,
         help='Path to alpha stash JSON file (default: stdin)')
     p_update.set_defaults(func=cmd_update)
 
     # --- migrate ---
-    p_migrate = subparsers.add_parser('migrate', help='Conservation enforcement')
-    p_migrate.add_argument('--buffer-dir', required=True, help='Path to buffer directory')
-    p_migrate.add_argument('--warm-max', type=int, default=None, help='Warm layer max lines')
-    p_migrate.add_argument('--hot-max', type=int, default=None, help='Hot layer max lines')
-    p_migrate.add_argument('--cold-max', type=int, default=None, help='Cold layer max lines')
+    p_migrate = subparsers.add_parser('migrate', parents=[buf_parent, limits_parent],
+        help='Conservation enforcement')
     p_migrate.add_argument('--dry-run', action='store_true', help='Report without writing')
     p_migrate.set_defaults(func=cmd_migrate)
 
     # --- validate ---
-    p_validate = subparsers.add_parser('validate', help='Check layers against constraints')
-    p_validate.add_argument('--buffer-dir', required=True, help='Path to buffer directory')
-    p_validate.add_argument('--warm-max', type=int, default=None, help='Warm layer max lines')
-    p_validate.add_argument('--hot-max', type=int, default=None, help='Hot layer max lines')
-    p_validate.add_argument('--cold-max', type=int, default=None, help='Cold layer max lines')
+    p_validate = subparsers.add_parser('validate', parents=[buf_parent, limits_parent],
+        help='Check layers against constraints')
     p_validate.set_defaults(func=cmd_validate)
 
     # --- sync ---
-    p_sync = subparsers.add_parser('sync', help='Sync MEMORY.md + project registry')
-    p_sync.add_argument('--buffer-dir', required=True, help='Path to buffer directory')
+    p_sync = subparsers.add_parser('sync', parents=[buf_parent],
+        help='Sync MEMORY.md + project registry')
     p_sync.add_argument('--memory-path', default=None, help='Path to MEMORY.md')
     p_sync.add_argument('--registry-path', default=None, help='Path to projects.json')
     p_sync.add_argument('--project-name', default=None, help='Project name for registry')
     p_sync.set_defaults(func=cmd_sync)
 
     # --- next-id ---
-    p_nextid = subparsers.add_parser('next-id', help='Get next available ID')
-    p_nextid.add_argument('--buffer-dir', required=True, help='Path to buffer directory')
+    p_nextid = subparsers.add_parser('next-id', parents=[buf_parent],
+        help='Get next available ID')
     p_nextid.add_argument('--layer', required=True, choices=['warm', 'cold', 'convergence'],
                           help='Layer to get ID for')
     p_nextid.set_defaults(func=cmd_next_id)
 
     # --- handoff (full pipeline) ---
-    p_handoff = subparsers.add_parser('handoff',
+    p_handoff = subparsers.add_parser('handoff', parents=[buf_parent, limits_parent],
         help='Full pipeline: update + migrate + sync in one call (preferred)')
-    p_handoff.add_argument('--buffer-dir', required=True, help='Path to buffer directory')
     p_handoff.add_argument('--input', default=None,
         help='Path to alpha stash JSON file (default: stdin)')
-    p_handoff.add_argument('--warm-max', type=int, default=None, help='Warm layer max lines')
-    p_handoff.add_argument('--hot-max', type=int, default=None, help='Hot layer max lines')
-    p_handoff.add_argument('--cold-max', type=int, default=None, help='Cold layer max lines')
     p_handoff.add_argument('--memory-path', default=None, help='Path to MEMORY.md')
     p_handoff.add_argument('--registry-path', default=None, help='Path to projects.json')
     p_handoff.add_argument('--project-name', default=None, help='Project name for registry')
     p_handoff.set_defaults(func=cmd_handoff)
 
     # --- archive ---
-    p_archive = subparsers.add_parser('archive', help='Cold->tower archival')
-    p_archive.add_argument('--buffer-dir', required=True, help='Path to buffer directory')
+    p_archive = subparsers.add_parser('archive', parents=[buf_parent, limits_parent],
+        help='Cold->tower archival')
     p_archive.add_argument('--force', action='store_true', help='Force even if under limit')
     p_archive.add_argument('--entry-ids', nargs='*', default=None,
                            help='Specific entry IDs to archive (e.g., c:7 c:12)')
     p_archive.set_defaults(func=cmd_archive)
 
     # --- alpha-read ---
-    p_alpha_read = subparsers.add_parser('alpha-read',
+    p_alpha_read = subparsers.add_parser('alpha-read', parents=[buf_parent],
         help='Read alpha bin summary (reference memory index)')
-    p_alpha_read.add_argument('--buffer-dir', required=True, help='Path to buffer directory')
     p_alpha_read.set_defaults(func=cmd_alpha_read)
 
     # --- alpha-query ---
-    p_alpha_query = subparsers.add_parser('alpha-query',
+    p_alpha_query = subparsers.add_parser('alpha-query', parents=[buf_parent],
         help='Query alpha bin for referents by ID, source, or concept')
-    p_alpha_query.add_argument('--buffer-dir', required=True, help='Path to buffer directory')
     p_alpha_query.add_argument('--id', nargs='+', default=None,
                                help='Retrieve entries by ID (e.g., w:218 cw:83)')
     p_alpha_query.add_argument('--source', default=None,
@@ -2163,9 +2164,8 @@ def main():
     p_alpha_query.set_defaults(func=cmd_alpha_query)
 
     # --- alpha-write ---
-    p_alpha_write = subparsers.add_parser('alpha-write',
+    p_alpha_write = subparsers.add_parser('alpha-write', parents=[buf_parent],
         help='Write entries to alpha bin (reads JSON from stdin)')
-    p_alpha_write.add_argument('--buffer-dir', required=True, help='Path to buffer directory')
     p_alpha_write.add_argument('--dry-run', action='store_true',
                                help='Validate and show what would be written without writing')
     p_alpha_write.add_argument('--id', dest='id_override', default=None,
@@ -2173,17 +2173,15 @@ def main():
     p_alpha_write.set_defaults(func=cmd_alpha_write)
 
     # --- alpha-delete ---
-    p_alpha_del = subparsers.add_parser('alpha-delete',
+    p_alpha_del = subparsers.add_parser('alpha-delete', parents=[buf_parent],
         help='Delete entries from alpha bin (removes files + updates index)')
-    p_alpha_del.add_argument('--buffer-dir', required=True, help='Path to buffer directory')
     p_alpha_del.add_argument('--id', nargs='+', required=True,
                              help='Entry IDs to delete (e.g., w:218 cw:83)')
     p_alpha_del.set_defaults(func=cmd_alpha_delete)
 
     # --- alpha-validate ---
-    p_alpha_val = subparsers.add_parser('alpha-validate',
+    p_alpha_val = subparsers.add_parser('alpha-validate', parents=[buf_parent],
         help='Validate alpha bin integrity (index vs files on disk)')
-    p_alpha_val.add_argument('--buffer-dir', required=True, help='Path to buffer directory')
     p_alpha_val.set_defaults(func=cmd_alpha_validate)
 
     args = parser.parse_args()
