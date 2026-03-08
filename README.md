@@ -63,12 +63,15 @@ The alpha bin separates **reference memory** (static, query-on-demand, no decay)
 
 Alpha is created automatically when you first run a distillation (via the companion `distill` plugin). Without alpha, the buffer operates on hot/warm/cold only -- all alpha wiring stays silent.
 
+Each entry is a **self-contained knowledge atom** (~30 lines) with Definition, Significance, Project Mapping, Related cross-references, and Source citation. A `<!-- TERMINAL -->` directive prevents AI from following reference chains back to full distillation files -- the alpha entry IS the canonical read.
+
 **Commands:**
 - `alpha-read` -- summary of what's in the alpha bin
 - `alpha-query --id w:218` -- retrieve a specific referent
 - `alpha-query --source sartre` -- list entries from a source
 - `alpha-query --concept totalization` -- search by concept
-- `alpha-write` -- write new entries (JSON on stdin)
+- `alpha-write` -- write new entries (JSON on stdin or `--input file.json`)
+- `alpha-enrich` -- enrich existing entries with rich body content (preserves header, replaces body)
 - `alpha-delete --id w:218` -- remove entries
 - `alpha-validate` -- check index integrity
 

@@ -2,6 +2,27 @@
 
 All notable changes to buffer are documented here.
 
+## [1.1.0] - 2026-03-08
+
+### Added
+- **Alpha enrichment** — each alpha `.md` file is now a self-contained knowledge atom (30-80 lines) with Definition, Significance, Project Mapping, Related cross-references, and Source citation. Sigma never needs to read the full distillation to recall a concept
+- `alpha-enrich` subcommand — enriches existing alpha entries in place (preserves header/mapping, replaces body). Accepts JSON array of `{id, body}` objects
+- `--input` flag on `alpha-write` and `alpha-enrich` — reads JSON from file instead of stdin, bypassing Windows encoding issues with piped UTF-8
+- **TERMINAL anti-entropy directive** — `<!-- TERMINAL: ... -->` HTML comment embedded in every enriched entry prevents downstream AI instances from following reference chains back to full distillation files
+- `body` field support in `make_cross_source_md()` — appends rich content after Mapping section; backward-compatible (no body = thin stub)
+- `context` field support in `make_convergence_web_md()` — appends `## Context` section after Tetradic Structure
+- `distillation` field — renders as `**Distillation**: filename.md` for traceability
+- **Enrichment guidelines** in integrate SKILL.md — future distillations auto-produce rich alpha entries
+- `distill_backfill_alpha.py` — one-time backfill script parsing Key Concepts tables from distillation files
+- `create_missing_alpha.py` — generates alpha-write JSON for sources with distillations but no prior alpha entries
+- 12 new test cases for alpha-enrich
+
+### Impact
+- Alpha entries grow from ~7-line stubs to ~25-30 line knowledge atoms
+- Sigma hook reads are terminal — one file, zero follow-up reads, massive token savings at recall
+- 219 entries enriched with TERMINAL directive across sigma-TAP project
+- 42 new entries created for 4 previously-unmapped sources
+
 ## [1.0.0] - 2026-03-07
 
 ### Added
