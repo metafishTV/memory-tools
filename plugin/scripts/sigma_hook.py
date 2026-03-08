@@ -7,7 +7,8 @@ Fires on every user message. Cascades through sigma layers:
   message → gates → hot layer → alpha (if needed) → silent exit
 
 Gates (exit-early, zero token cost):
-  0. Distill-active: skip entirely when .distill_active marker present
+  0a. Post-compaction relay: inject buffer summary if .compact_marker present
+  0b. Distill-active: skip entirely when .distill_active marker present
   1. Suppress list: .sigma_suppress file lists concepts/threads to ignore
   2. Staleness gate: skip hot level when buffer already loaded this session
   3. IDF-weighted scoring: keyword weight = 1/n (n = concept matches in corpus)
@@ -545,6 +546,63 @@ def format_alpha_hits(concept_matches, sources_data):
 
 
 # ---------------------------------------------------------------------------
+# Post-compaction relay
+# ---------------------------------------------------------------------------
+
+def check_compact_relay(buffer_dir, cwd):
+    """If a .compact_marker exists, inject full buffer summary and consume it.
+
+    This acts as a PostCompact proxy — the PreCompact hook writes the marker,
+    and the first UserPromptSubmit after compaction picks it up here.
+    Returns True if relay fired (caller should exit), False otherwise.
+    """
+    marker_path = os.path.join(buffer_dir, '.compact_marker')
+    if not os.path.exists(marker_path):
+        return False
+
+    hot = read_json(os.path.join(buffer_dir, 'handoff.json'))
+    if not hot:
+        # Marker exists but hot layer gone — clean up and skip
+        try:
+            os.remove(marker_path)
+        except OSError:
+            pass
+        return False
+
+    # Import compact_hook's summary builder (same scripts/ directory)
+    try:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            'compact_hook', os.path.join(script_dir, 'compact_hook.py'))
+        compact_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(compact_mod)
+
+        hot_max, warm_max, cold_max = compact_mod.detect_layer_limits(cwd)
+        summary = compact_mod.build_compact_summary(
+            hot, buffer_dir, hot_max, warm_max, cold_max)
+    except Exception:
+        # Fallback: minimal summary if import fails
+        ns = hot.get('natural_summary', '')
+        aw = hot.get('active_work', {})
+        phase = aw.get('current_phase', '?')
+        summary = (
+            f"POST-COMPACTION RECOVERY (minimal)\n"
+            f"Phase: {phase}\n"
+            f"Summary: {ns}\n"
+            f"Run /buffer:on for full context."
+        )
+
+    # Consume marker
+    try:
+        os.remove(marker_path)
+    except OSError:
+        pass
+
+    emit({"suppressOutput": True, "systemMessage": summary})
+
+
+# ---------------------------------------------------------------------------
 # Main — gated cascade
 # ---------------------------------------------------------------------------
 
@@ -564,7 +622,10 @@ def main():
     if not buffer_dir:
         emit_empty()
 
-    # GATE 0: Distill-active — skip entirely during distillation
+    # GATE 0a: Post-compaction relay — inject buffer summary if marker present
+    check_compact_relay(buffer_dir, cwd)
+
+    # GATE 0b: Distill-active — skip entirely during distillation
     if is_distill_active(buffer_dir):
         emit_empty()
 
