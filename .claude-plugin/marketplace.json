@@ -7,11 +7,11 @@
     "url": "https://github.com/metafishTV"
   },
   "metadata": {
-    "description": "Three-layer session buffer for cross-instance continuity",
-    "version": "1.0.0",
+    "description": "Memory and continuity tools for Claude Code — session buffer + source distillation",
+    "version": "1.1.0",
     "homepage": "https://github.com/metafishTV/memory-tools",
     "license": "MIT",
-    "totalPlugins": 1,
+    "totalPlugins": 2,
     "lastUpdated": "2026-03-07"
   },
   "plugins": [
@@ -22,6 +22,18 @@
       "source": "./plugin",
       "category": "productivity",
       "keywords": ["session", "buffer", "memory", "context", "handoff", "continuity"],
+      "author": {
+        "name": "metafish",
+        "url": "https://github.com/metafishTV"
+      }
+    },
+    {
+      "name": "distill",
+      "description": "Source distillation pipeline with reference knowledge extraction. Distill PDFs, web pages, images, and recordings into structured reference knowledge. Companion to the buffer plugin.",
+      "version": "1.0.0",
+      "source": "./distill",
+      "category": "productivity",
+      "keywords": ["distill", "extraction", "knowledge", "reference", "pdf", "analysis"],
       "author": {
         "name": "metafish",
         "url": "https://github.com/metafishTV"
