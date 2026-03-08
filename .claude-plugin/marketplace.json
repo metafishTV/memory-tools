@@ -18,7 +18,7 @@
     {
       "name": "buffer",
       "description": "Three-layer memory buffer for cross-instance continuity. Preserves decisions, open threads, concept maps, and working context across Claude Code sessions.",
-      "version": "0.4.0",
+      "version": "1.0.0",
       "source": "./plugin",
       "category": "productivity",
       "keywords": ["session", "buffer", "memory", "context", "handoff", "continuity"],
