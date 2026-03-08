@@ -40,7 +40,7 @@ if sys.platform == 'win32':
 
 
 # ---------------------------------------------------------------------------
-# Constants
+# Constants (defaults — can be overridden per-project in skill config)
 # ---------------------------------------------------------------------------
 
 HOT_MAX_LINES = 200
@@ -56,6 +56,71 @@ SCOPE_MAP = {
     'full': 'full',
     'lite': 'lite',
 }
+
+
+def detect_layer_limits(cwd):
+    """Detect project-level overrides for hot-max, warm-max, cold-max.
+
+    Scans .claude/skills/buffer/on.md (project skill config) for lines like:
+      hot-max: 250
+      warm-max: 800
+      cold-max: 750
+
+    Returns dict with resolved limits (defaults for any not overridden).
+    """
+    limits = {
+        'hot': HOT_MAX_LINES,
+        'warm': WARM_MAX_LINES_DEFAULT,
+        'cold': COLD_MAX_LINES,
+    }
+    project_on = os.path.join(cwd, '.claude', 'skills', 'buffer', 'on.md')
+    if not os.path.exists(project_on):
+        return limits
+    try:
+        with open(project_on, 'r', encoding='utf-8') as f:
+            content = f.read()
+        for layer in ('hot', 'warm', 'cold'):
+            match = re.search(
+                rf'{layer}[_\s]*max[^:]*?(\d+)', content, re.IGNORECASE
+            )
+            if match:
+                limits[layer] = int(match.group(1))
+    except OSError:
+        pass
+    return limits
+
+
+def resolve_limits(args):
+    """Resolve layer limits: CLI flags > project skill config > defaults.
+
+    Returns (hot_max, warm_max, cold_max) tuple.
+    """
+    # Start from defaults
+    hot_max = HOT_MAX_LINES
+    warm_max = WARM_MAX_LINES_DEFAULT
+    cold_max = COLD_MAX_LINES
+
+    # Try project-level auto-detection from buffer-dir parent
+    buf_dir = getattr(args, 'buffer_dir', None)
+    if buf_dir:
+        # buffer_dir is typically <project>/.claude/buffer/
+        # project root is two levels up
+        project_root = str(Path(buf_dir).parent.parent)
+        if os.path.isdir(project_root):
+            detected = detect_layer_limits(project_root)
+            hot_max = detected['hot']
+            warm_max = detected['warm']
+            cold_max = detected['cold']
+
+    # CLI flags override everything
+    if getattr(args, 'hot_max', None) is not None:
+        hot_max = args.hot_max
+    if getattr(args, 'warm_max', None) is not None:
+        warm_max = args.warm_max
+    if getattr(args, 'cold_max', None) is not None:
+        cold_max = args.cold_max
+
+    return hot_max, warm_max, cold_max
 
 
 # ---------------------------------------------------------------------------
@@ -401,18 +466,18 @@ def cmd_read(args):
         out.append(format_section("Warm Pointers Resolved", '\n'.join(lines)))
 
     # Layer sizes
-    warm_max = args.warm_max if hasattr(args, 'warm_max') and args.warm_max else WARM_MAX_LINES_DEFAULT
+    hot_max, warm_max, cold_max = resolve_limits(args)
     hot_lines = count_json_lines(hot)
     warm_lines = count_json_lines(warm) if warm else 0
     cold_lines = count_json_lines(cold) if cold else 0
 
     size_lines = [
-        f"Hot:  {hot_lines} lines (max {HOT_MAX_LINES})"
-        + (" *** OVER ***" if hot_lines > HOT_MAX_LINES else ""),
+        f"Hot:  {hot_lines} lines (max {hot_max})"
+        + (" *** OVER ***" if hot_lines > hot_max else ""),
         f"Warm: {warm_lines} lines (max {warm_max})"
         + (" *** OVER ***" if warm_lines > warm_max else ""),
-        f"Cold: {cold_lines} lines (max {COLD_MAX_LINES})"
-        + (" *** OVER ***" if cold_lines > COLD_MAX_LINES else ""),
+        f"Cold: {cold_lines} lines (max {cold_max})"
+        + (" *** OVER ***" if cold_lines > cold_max else ""),
     ]
     out.append(format_section("Layer Sizes", '\n'.join(size_lines)))
 
@@ -667,7 +732,7 @@ def cmd_update(args):
 def cmd_migrate(args):
     """Conservation enforcement — migrate entries between layers."""
     buf_dir = Path(args.buffer_dir)
-    warm_max = args.warm_max or WARM_MAX_LINES_DEFAULT
+    hot_max, warm_max, cold_max = resolve_limits(args)
 
     hot = read_json(buf_dir / 'handoff.json')
     warm = read_json(buf_dir / 'handoff-warm.json')
@@ -683,7 +748,7 @@ def cmd_migrate(args):
 
     # --- Hot -> Warm migration ---
     hot_lines = count_json_lines(hot)
-    if hot_lines > HOT_MAX_LINES and mode in ('memory', 'project'):
+    if hot_lines > hot_max and mode in ('memory', 'project'):
         # Move oldest decisions to warm decisions_archive
         decisions = hot.get('recent_decisions', [])
         if len(decisions) > 2:
@@ -766,8 +831,8 @@ def cmd_migrate(args):
 
     # --- Cold overflow detection ---
     cold_lines = count_json_lines(cold) if cold else 0
-    if cold_lines > COLD_MAX_LINES:
-        report.append(f"WARNING: Cold layer at {cold_lines} lines (max {COLD_MAX_LINES}). "
+    if cold_lines > cold_max:
+        report.append(f"WARNING: Cold layer at {cold_lines} lines (max {cold_max}). "
                       f"Run 'archive' subcommand to create tower file.")
 
     # --- Write modified layers ---
@@ -808,7 +873,7 @@ def cmd_migrate(args):
 def cmd_validate(args):
     """Check layers against size and schema constraints."""
     buf_dir = Path(args.buffer_dir)
-    warm_max = args.warm_max or WARM_MAX_LINES_DEFAULT
+    hot_max, warm_max, cold_max = resolve_limits(args)
 
     hot = read_json(buf_dir / 'handoff.json')
     warm = read_json(buf_dir / 'handoff-warm.json')
@@ -835,16 +900,16 @@ def cmd_validate(args):
     warm_lines = count_json_lines(warm) if warm else 0
     cold_lines = count_json_lines(cold) if cold else 0
 
-    info.append(f"Hot: {hot_lines}/{HOT_MAX_LINES} lines")
+    info.append(f"Hot: {hot_lines}/{hot_max} lines")
     info.append(f"Warm: {warm_lines}/{warm_max} lines")
-    info.append(f"Cold: {cold_lines}/{COLD_MAX_LINES} lines")
+    info.append(f"Cold: {cold_lines}/{cold_max} lines")
 
-    if hot_lines > HOT_MAX_LINES:
-        issues.append(f"Hot layer over limit: {hot_lines} > {HOT_MAX_LINES}")
+    if hot_lines > hot_max:
+        issues.append(f"Hot layer over limit: {hot_lines} > {hot_max}")
     if warm_lines > warm_max:
         issues.append(f"Warm layer over limit: {warm_lines} > {warm_max}")
-    if cold_lines > COLD_MAX_LINES:
-        issues.append(f"Cold layer over limit: {cold_lines} > {COLD_MAX_LINES}")
+    if cold_lines > cold_max:
+        issues.append(f"Cold layer over limit: {cold_lines} > {cold_max}")
 
     # Required fields
     required_hot = ['session_meta', 'natural_summary', 'memory_config']
@@ -1123,8 +1188,9 @@ def cmd_archive(args):
         sys.exit(1)
 
     cold_lines = count_json_lines(cold)
-    if cold_lines <= COLD_MAX_LINES and not args.force:
-        print(f"Cold layer at {cold_lines} lines (max {COLD_MAX_LINES}). "
+    _, _, cold_max = resolve_limits(args)
+    if cold_lines <= cold_max and not args.force:
+        print(f"Cold layer at {cold_lines} lines (max {cold_max}). "
               f"No archival needed. Use --force to override.", file=sys.stderr)
         sys.exit(0)
 
@@ -1252,7 +1318,7 @@ def cmd_handoff(args):
     import types
 
     buf_dir = args.buffer_dir
-    warm_max = args.warm_max or WARM_MAX_LINES_DEFAULT
+    hot_max, warm_max, cold_max = resolve_limits(args)
     pipeline_report = []
 
     # --- Phase 1: Update (merge alpha stash into sigma trunk) ---
@@ -1274,6 +1340,8 @@ def cmd_handoff(args):
     migrate_args = types.SimpleNamespace(
         buffer_dir=buf_dir,
         warm_max=warm_max,
+        hot_max=hot_max,
+        cold_max=cold_max,
         dry_run=False,
     )
     try:
@@ -2010,6 +2078,8 @@ def main():
     p_read = subparsers.add_parser('read', help='Reconstruct context from buffer layers')
     p_read.add_argument('--buffer-dir', required=True, help='Path to buffer directory')
     p_read.add_argument('--warm-max', type=int, default=None, help='Warm layer max lines')
+    p_read.add_argument('--hot-max', type=int, default=None, help='Hot layer max lines')
+    p_read.add_argument('--cold-max', type=int, default=None, help='Cold layer max lines')
     p_read.set_defaults(func=cmd_read)
 
     # --- update ---
@@ -2024,6 +2094,8 @@ def main():
     p_migrate = subparsers.add_parser('migrate', help='Conservation enforcement')
     p_migrate.add_argument('--buffer-dir', required=True, help='Path to buffer directory')
     p_migrate.add_argument('--warm-max', type=int, default=None, help='Warm layer max lines')
+    p_migrate.add_argument('--hot-max', type=int, default=None, help='Hot layer max lines')
+    p_migrate.add_argument('--cold-max', type=int, default=None, help='Cold layer max lines')
     p_migrate.add_argument('--dry-run', action='store_true', help='Report without writing')
     p_migrate.set_defaults(func=cmd_migrate)
 
@@ -2031,6 +2103,8 @@ def main():
     p_validate = subparsers.add_parser('validate', help='Check layers against constraints')
     p_validate.add_argument('--buffer-dir', required=True, help='Path to buffer directory')
     p_validate.add_argument('--warm-max', type=int, default=None, help='Warm layer max lines')
+    p_validate.add_argument('--hot-max', type=int, default=None, help='Hot layer max lines')
+    p_validate.add_argument('--cold-max', type=int, default=None, help='Cold layer max lines')
     p_validate.set_defaults(func=cmd_validate)
 
     # --- sync ---
@@ -2055,6 +2129,8 @@ def main():
     p_handoff.add_argument('--input', default=None,
         help='Path to alpha stash JSON file (default: stdin)')
     p_handoff.add_argument('--warm-max', type=int, default=None, help='Warm layer max lines')
+    p_handoff.add_argument('--hot-max', type=int, default=None, help='Hot layer max lines')
+    p_handoff.add_argument('--cold-max', type=int, default=None, help='Cold layer max lines')
     p_handoff.add_argument('--memory-path', default=None, help='Path to MEMORY.md')
     p_handoff.add_argument('--registry-path', default=None, help='Path to projects.json')
     p_handoff.add_argument('--project-name', default=None, help='Project name for registry')

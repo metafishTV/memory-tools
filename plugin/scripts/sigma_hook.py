@@ -7,6 +7,7 @@ Fires on every user message. Cascades through sigma layers:
   message → gates → hot layer → alpha (if needed) → silent exit
 
 Gates (exit-early, zero token cost):
+  0. Distill-active: skip entirely when .distill_active marker present
   1. Suppress list: .sigma_suppress file lists concepts/threads to ignore
   2. Staleness gate: skip hot level when buffer already loaded this session
   3. IDF-weighted scoring: keyword weight = 1/n (n = concept matches in corpus)
@@ -25,14 +26,19 @@ Scoring model:
     "alterity" matches 1 concept  → weight 1.0
     "structure" matches 12 concepts → weight 0.08
     "review" matches 0 concepts   → weight 0.0
-  Threshold = 0.8 + 0.08 * num_keywords (scales with prompt size)
+  Threshold = 0.8 + non-linear(num_keywords) (scales with prompt size)
     3 keywords  → threshold 1.04
-    10 keywords → threshold 1.60
-    15 keywords → threshold 2.00
+    10 keywords → threshold 1.45
+    25 keywords → threshold 2.20
+
+Dynamic scalars (scale with corpus size and/or prompt length):
+  - MAX_KEYWORDS:  8-25 (prompt word_count // 20)
+  - MAX_INJECT:    3-5  (prompt word_count brackets)
+  - SCORE_EXACT:   2-4  (corpus size brackets)
+  - MIN_SCORE:     1.5-3.0 (corpus size brackets)
+  - THRESHOLD:     non-linear — 0.08/kw for first 5, 0.05/kw after
 
 Design constraints:
-  - Max 3 entries injected total
-  - Max 15 keywords extracted from message
   - Total injection < ~100 tokens
   - Must complete in <5s
   - Each gate reduces token cost, never adds
@@ -50,19 +56,87 @@ if sys.platform == 'win32':
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
 # ---------------------------------------------------------------------------
-# Constants
+# Constants — static
 # ---------------------------------------------------------------------------
 
-MAX_INJECT = 3        # max entries to inject (total across all levels)
-MAX_KEYWORDS = 15     # max keywords extracted from message
-MIN_WORD_LEN = 4      # skip short words
-SCORE_EXACT = 3       # exact match weight
-SCORE_SUBSTRING = 1   # substring match weight
-MIN_SCORE = 2         # minimum score to qualify for alpha
+MIN_WORD_LEN = 4           # skip short words (below this = noise)
+SCORE_SUBSTRING = 1        # substring match weight (baseline)
+SUBSTRING_WEIGHT = 0.25    # IDF contribution ratio for substring vs exact matches
 
-# IDF threshold scaling: threshold = BASE + SCALE * num_keywords
-THRESHOLD_BASE = 0.8   # minimum weight for short prompts
-THRESHOLD_SCALE = 0.08 # additional weight required per keyword
+# ---------------------------------------------------------------------------
+# Dynamic scalars — functions of corpus size, prompt length, or both
+# ---------------------------------------------------------------------------
+
+def dynamic_max_keywords(word_count):
+    """Scale keyword extraction with prompt size.
+
+    Short prompts (< 50 words)  → 8 keywords  (tight focus)
+    Medium prompts (50-250)     → 10-15 keywords
+    Long prompts (250+)         → up to 25 keywords (need broader net)
+    """
+    return min(25, max(8, word_count // 20))
+
+
+def dynamic_max_inject(word_count):
+    """Scale injection slots with prompt size.
+
+    Short prompts → 3 (default)
+    Long prompts (200+) → up to 5
+    """
+    if word_count >= 200:
+        return 5
+    if word_count >= 100:
+        return 4
+    return 3
+
+
+def dynamic_score_exact(corpus_size):
+    """Scale exact-match multiplier with corpus size.
+
+    Small corpus (< 50)   → 2 (fewer concepts = less precision needed)
+    Medium corpus (50-300) → 3
+    Large corpus (300+)    → 4 (need sharper exactness penalty)
+    """
+    if corpus_size >= 300:
+        return 4
+    if corpus_size >= 50:
+        return 3
+    return 2
+
+
+def dynamic_min_score(corpus_size):
+    """Scale minimum alpha qualification score with corpus size.
+
+    Small corpus (< 50)   → 1.5 (lower bar, fewer false positives possible)
+    Medium corpus (50-300) → 2.0
+    Large corpus (300+)    → 3.0 (higher bar to cut noise)
+    """
+    if corpus_size >= 300:
+        return 3.0
+    if corpus_size >= 50:
+        return 2.0
+    return 1.5
+
+
+# IDF threshold scaling — non-linear (steep for first 5 keywords, gentler after)
+THRESHOLD_BASE = 0.8   # minimum weight for very short prompts
+
+def confidence_threshold(num_keywords):
+    """Compute minimum total IDF weight needed to fire injection.
+
+    Non-linear scaling — first 5 keywords at 0.08 per keyword,
+    keywords 6+ at 0.05 per keyword. Longer prompts need stronger
+    evidence but with diminishing marginal threshold increase.
+
+    3 keywords  → 0.8 + 0.24 = 1.04
+    5 keywords  → 0.8 + 0.40 = 1.20
+    10 keywords → 0.8 + 0.40 + 0.25 = 1.45
+    15 keywords → 0.8 + 0.40 + 0.50 = 1.70
+    25 keywords → 0.8 + 0.40 + 1.00 = 2.20
+    """
+    if num_keywords <= 5:
+        return THRESHOLD_BASE + 0.08 * num_keywords
+    return THRESHOLD_BASE + 0.08 * 5 + 0.05 * (num_keywords - 5)
 
 # Common words to skip
 STOPWORDS = frozenset({
@@ -166,7 +240,25 @@ def is_suppressed(text, suppress_list):
 
 
 # ---------------------------------------------------------------------------
-# GATE 2: Staleness gate
+# GATE 2: Distill-active gate
+# ---------------------------------------------------------------------------
+
+def is_distill_active(buffer_dir):
+    """Check if a distillation is in progress.
+
+    Looks for .distill_active marker written by the distill skill at start,
+    cleaned at end. When active, sigma injection would create entropic
+    feedback — the user's prompts are already full of concept/source keywords
+    from the material being distilled, so matching against alpha would
+    shotgun-inject the very concepts the distill process is already reading.
+    Returns True if sigma should skip entirely.
+    """
+    marker = os.path.join(buffer_dir, '.distill_active')
+    return os.path.exists(marker)
+
+
+# ---------------------------------------------------------------------------
+# GATE 3: Staleness gate
 # ---------------------------------------------------------------------------
 
 def is_hot_stale(buffer_dir):
@@ -219,36 +311,30 @@ def compute_idf_weights(keywords, concept_index):
         if exact_matches > 0:
             weight += 1.0 / exact_matches
         if substring_matches > 0:
-            weight += 0.25 / substring_matches
+            weight += SUBSTRING_WEIGHT / substring_matches
 
         weights[kw] = weight
 
     return weights
 
 
-def confidence_threshold(num_keywords):
-    """Compute minimum total IDF weight needed to fire injection.
-
-    Scales linearly with keyword count — longer prompts need stronger
-    evidence to avoid shotgun matching.
-
-    Returns float threshold.
-    """
-    return THRESHOLD_BASE + THRESHOLD_SCALE * num_keywords
-
-
 # ---------------------------------------------------------------------------
 # Keyword extraction
 # ---------------------------------------------------------------------------
 
-def extract_keywords(text):
+def extract_keywords(text, max_keywords=None):
     """Extract meaningful keywords from user message.
 
-    Returns list of lowercase keywords, max MAX_KEYWORDS.
+    max_keywords scales dynamically with prompt size if not overridden.
     Preserves underscore_joined terms (likely concept names).
     """
     if not text:
         return []
+
+    # Compute dynamic keyword cap from word count if not overridden
+    word_count = len(text.split())
+    if max_keywords is None:
+        max_keywords = dynamic_max_keywords(word_count)
 
     # Find underscore_joined terms first (high signal)
     underscore_terms = re.findall(r'[a-zA-Z]+(?:_[a-zA-Z]+)+', text)
@@ -275,7 +361,7 @@ def extract_keywords(text):
             keywords.append(w)
             seen.add(w)
 
-    return keywords[:MAX_KEYWORDS]
+    return keywords[:max_keywords]
 
 
 # ---------------------------------------------------------------------------
@@ -287,14 +373,15 @@ def word_match(keyword, text_lower):
     return bool(re.search(r'\b' + re.escape(keyword) + r'\b', text_lower))
 
 
-def match_hot(keywords, hot, suppress_list, idf_weights, threshold):
+def match_hot(keywords, hot, suppress_list, idf_weights, threshold,
+              max_inject=3):
     """Match keywords against hot layer fields using IDF-weighted scoring.
 
     Checks: active_work, open_threads, recent_decisions, orientation.why_keys.
     Uses word-boundary matching to avoid false positives.
     Filters suppressed entries.
     Requires total IDF weight of matching keywords >= threshold.
-    Returns list of (label, text) hits, max MAX_INJECT.
+    Returns list of (label, text) hits, max max_inject.
     """
     if not keywords or not hot:
         return []
@@ -366,7 +453,7 @@ def match_hot(keywords, hot, suppress_list, idf_weights, threshold):
     if matched_sources:
         hits.append(('source', ', '.join(matched_sources)))
 
-    return hits[:MAX_INJECT]
+    return hits[:max_inject]
 
 
 def format_hot_hits(hits):
@@ -385,19 +472,21 @@ def format_hot_hits(hits):
 # ---------------------------------------------------------------------------
 
 def match_alpha_concepts(keywords, concept_index, suppress_list,
-                          idf_weights, threshold):
+                          idf_weights, threshold, score_exact=3,
+                          min_score=2.0, max_inject=3):
     """Match keywords against alpha concept_index keys with IDF weighting.
 
     For each concept, sums the IDF weight of matching keywords.
-    Exact match gets the keyword's full IDF weight * SCORE_EXACT multiplier.
+    Exact match gets the keyword's full IDF weight * score_exact multiplier.
     Substring match gets IDF weight * SCORE_SUBSTRING.
-    Requires total weighted score >= threshold.
+    Requires total weighted score >= min_score AND >= threshold.
     Filters suppressed concepts.
     Returns list of (concept_key, work_ids, weighted_score) sorted desc.
     """
     if not keywords or not concept_index:
         return []
 
+    effective_threshold = max(threshold, min_score)
     scores = {}
 
     for concept_key, work_ids in concept_index.items():
@@ -414,15 +503,15 @@ def match_alpha_concepts(keywords, concept_index, suppress_list,
             if w == 0.0:
                 continue
             if kw == concept_lower:
-                weighted_score += w * SCORE_EXACT
+                weighted_score += w * score_exact
             elif kw in concept_lower or concept_lower in kw:
                 weighted_score += w * SCORE_SUBSTRING
 
-        if weighted_score >= threshold:
+        if weighted_score >= effective_threshold:
             scores[concept_key] = (work_ids, weighted_score)
 
     ranked = sorted(scores.items(), key=lambda x: x[1][1], reverse=True)
-    return [(key, ids, sc) for key, (ids, sc) in ranked[:MAX_INJECT]]
+    return [(key, ids, sc) for key, (ids, sc) in ranked[:max_inject]]
 
 
 def find_source_for_id(work_id, sources_data):
@@ -475,7 +564,11 @@ def main():
     if not buffer_dir:
         emit_empty()
 
-    # Extract keywords
+    # GATE 0: Distill-active — skip entirely during distillation
+    if is_distill_active(buffer_dir):
+        emit_empty()
+
+    # Extract keywords (dynamic cap based on prompt size)
     keywords = extract_keywords(user_prompt)
     if not keywords:
         emit_empty()
@@ -489,6 +582,13 @@ def main():
     concept_index = alpha_idx.get('concept_index', {}) if alpha_idx else {}
     sources_data = alpha_idx.get('sources', {}) if alpha_idx else {}
 
+    # Compute dynamic scalars from corpus size and prompt size
+    corpus_size = len(concept_index)
+    word_count = len(user_prompt.split())
+    max_inject = dynamic_max_inject(word_count)
+    score_exact = dynamic_score_exact(corpus_size)
+    min_score = dynamic_min_score(corpus_size)
+
     # GATE 3: Compute IDF weights + scaling threshold
     idf_weights = compute_idf_weights(keywords, concept_index)
     threshold = confidence_threshold(len(keywords))
@@ -500,7 +600,8 @@ def main():
         hot = read_json(os.path.join(buffer_dir, 'handoff.json'))
         if hot:
             hot_hits = match_hot(keywords, hot, suppress_list,
-                                  idf_weights, threshold)
+                                  idf_weights, threshold,
+                                  max_inject=max_inject)
             if hot_hits:
                 injection = format_hot_hits(hot_hits)
                 emit({"suppressOutput": True, "systemMessage": injection})
@@ -511,9 +612,9 @@ def main():
     if not concept_index:
         emit_empty()
 
-    concept_matches = match_alpha_concepts(keywords, concept_index,
-                                            suppress_list, idf_weights,
-                                            threshold)
+    concept_matches = match_alpha_concepts(
+        keywords, concept_index, suppress_list, idf_weights, threshold,
+        score_exact=score_exact, min_score=min_score, max_inject=max_inject)
     if not concept_matches:
         emit_empty()
 

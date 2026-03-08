@@ -68,20 +68,32 @@ def read_hook_input():
     return {}
 
 
-def detect_warm_max(cwd):
-    """Check project skill config for warm-max override, default 500."""
+def detect_layer_limits(cwd):
+    """Check project skill config for hot-max, warm-max, cold-max overrides.
+
+    Returns (hot_max, warm_max, cold_max) with defaults for any not overridden.
+    """
     import re
+    hot_max, warm_max, cold_max = 200, 500, 500
     project_on = os.path.join(cwd, '.claude', 'skills', 'buffer', 'on.md')
     if os.path.exists(project_on):
         try:
             with open(project_on, 'r', encoding='utf-8') as f:
                 content = f.read()
-            match = re.search(r'warm[_\s]*max[^:]*?(\d+)', content, re.IGNORECASE)
-            if match:
-                return int(match.group(1))
+            for layer, default in [('hot', 200), ('warm', 500), ('cold', 500)]:
+                match = re.search(
+                    rf'{layer}[_\s]*max[^:]*?(\d+)', content, re.IGNORECASE
+                )
+                if match:
+                    if layer == 'hot':
+                        hot_max = int(match.group(1))
+                    elif layer == 'warm':
+                        warm_max = int(match.group(1))
+                    elif layer == 'cold':
+                        cold_max = int(match.group(1))
         except OSError:
             pass
-    return 500
+    return hot_max, warm_max, cold_max
 
 
 # ---------------------------------------------------------------------------
@@ -210,7 +222,9 @@ def detect_distill_in_progress(cwd):
             try:
                 for md in d.glob('*.md'):
                     mtime = md.stat().st_mtime
-                    if now - mtime < 600:  # Modified in last 10 minutes
+                    distill_window = int(os.environ.get(
+                        'BUFFER_DISTILL_WINDOW', 600))
+                    if now - mtime < distill_window:  # Default: 10 minutes
                         result.setdefault('recent_distillations', []).append({
                             'file': md.name,
                             'seconds_ago': int(now - mtime)
@@ -227,7 +241,7 @@ def detect_distill_in_progress(cwd):
     return result if result else None
 
 
-def build_compact_summary(hot, buffer_dir, warm_max):
+def build_compact_summary(hot, buffer_dir, hot_max, warm_max, cold_max):
     """Build a concise buffer summary for post-compaction context injection.
 
     Shorter than a full buffer read -- focuses on orientation and active work
@@ -395,7 +409,7 @@ def build_compact_summary(hot, buffer_dir, warm_max):
         except (json.JSONDecodeError, OSError):
             alpha_summary = ' | Alpha: present (index unreadable)'
 
-    lines.append(f"## Layer Sizes: Hot {hot_lines}/200 | Warm {warm_lines}/{warm_max} | Cold {cold_lines}/500{alpha_summary}")
+    lines.append(f"## Layer Sizes: Hot {hot_lines}/{hot_max} | Warm {warm_lines}/{warm_max} | Cold {cold_lines}/{cold_max}{alpha_summary}")
     lines.append("")
 
     # --- Distill-in-progress detection ---
@@ -475,11 +489,11 @@ def cmd_post_compact(hook_input):
         json.dump(empty_output, sys.stdout, ensure_ascii=False)
         sys.exit(0)
 
-    # Detect warm-max override
-    warm_max = detect_warm_max(cwd)
+    # Detect layer limit overrides
+    hot_max, warm_max, cold_max = detect_layer_limits(cwd)
 
     # Build concise summary for injection
-    context = build_compact_summary(hot, buffer_dir, warm_max)
+    context = build_compact_summary(hot, buffer_dir, hot_max, warm_max, cold_max)
 
     # Clean up marker
     try:
