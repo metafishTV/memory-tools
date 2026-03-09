@@ -2,6 +2,17 @@
 
 All notable changes to buffer are documented here.
 
+## [1.2.0] - 2026-03-09
+
+### Added
+- **Scanned PDF handling** — Route D now offers pytesseract as intermediate OCR option between Docling and vision fallback. Vision OCR batches pages in chunks of 5 with progress reporting
+- **Figure budget gate** — documents with >15 figure-candidate pages trigger a popup offering: extract all, sample every Nth page, OCR text only, or specify pages. Prevents runaway extraction on image-heavy documents
+- **Scan script enhancements** — `distill_scan.py` now reports `total_images`, `image_pages`, and `fully_scanned` flag. Fully scanned PDFs are prominently flagged in the summary
+- **MANDATORY REVIEW** interaction level — dense information (scan summary, interpretation review) now prints as plain text with a brief popup for decision only. Replaces cramming verbose data into narrow popup boxes
+- **FULL STOP protocol** — all user interaction points (MANDATORY POPUP and MANDATORY REVIEW) now enforce a hard stop: the AI's turn ends with the AskUserQuestion call, preventing the pattern of asking but continuing to work
+- **Integration results summary** — plain text summary of all integration actions (INDEX.md, alpha entries, convergence web, MEMORY.md, validation) printed after integration completes
+- pytesseract added to demand-install inventory with platform-specific Tesseract binary links
+
 ## [1.1.0] - 2026-03-08
 
 ### Added

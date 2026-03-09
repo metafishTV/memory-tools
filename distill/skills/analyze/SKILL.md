@@ -297,7 +297,15 @@ The interpretation file template varies by project map type:
 
 Use the custom schema defined during differentiation (loaded from `custom_schema` in the project config). The interpretation file should follow whatever structure the user specified, adapted from the components above.
 
-**⚠ MANDATORY POPUP**: After writing the interpretation file, you MUST present it to the user via `AskUserQuestion`. Options: "Looks good — proceed with integration" / "I have feedback." Do NOT proceed to integration until the user has responded. Do NOT assume acknowledgment from silence. They should see and review the project reading before post-updates fire.
+**⚠ MANDATORY REVIEW**: After writing the interpretation file, present a **plain text summary** to the user:
+- Number of concepts mapped and their relationship types (confirms/extends/challenges/novel)
+- Key integration points identified
+- Any flags or open questions
+- The output file path so the user can open and review the full document
+
+Then call `AskUserQuestion` with ONLY: "Looks good — proceed with integration" / "I have feedback." The popup is the decision; the summary is the plain text above. Do NOT proceed to integration until the user has responded. Do NOT assume acknowledgment from silence. They should see and review the project reading before post-updates fire.
+
+**⚠ FULL STOP** — see parent skill ENFORCEMENT RULE. Your turn ends after the AskUserQuestion call.
 
 ## Troubleshooting Decision Tree
 

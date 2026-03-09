@@ -175,6 +175,22 @@ buffer_manager.py alpha-validate --buffer-dir .claude/buffer/
 
 If validation fails, log the failure in Known Issues but do NOT revert writes.
 
+### Step 6: Integration Results Summary
+
+Print a **plain text** summary of all integration actions taken. This is informational — no popup or user decision needed. The pipeline proceeds to cleanup automatically.
+
+```
+--- Integration Complete ---
+INDEX.md: [updated — row added for [Source-Label] | already present — no change]
+Alpha entries: [N cross_source written (IDs: w:XXX–w:YYY) | skipped — no buffer]
+Convergence web: [M entries written (IDs: cw:XXX–cw:YYY) | 0 new connections found]
+MEMORY.md: [updated — N definitions added | skipped — cap exceeded | skipped — minimal mode]
+Validation: [passed | FAILED — see Known Issues]
+Known Issues: [clean run | N issues logged]
+```
+
+Include the summary even in File-Only Mode (with buffer items reported as "skipped — no buffer").
+
 ---
 
 ## File-Only Mode

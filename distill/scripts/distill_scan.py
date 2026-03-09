@@ -24,6 +24,9 @@ def scan_pdf(pdf_path):
         "scanned": [],
         "equations": [],
         "text_pages": [],
+        "image_pages": [],
+        "total_images": 0,
+        "fully_scanned": False,
         "confidence_notes": [],
         "page_count": len(doc),
     }
@@ -33,6 +36,12 @@ def scan_pdf(pdf_path):
         blocks = page.get_text("dict")["blocks"]
         text_blocks = [b for b in blocks if b["type"] == 0]
         stripped = text.strip()
+
+        # Image count
+        page_images = page.get_images(full=True)
+        if page_images:
+            scan["image_pages"].append(i)
+            scan["total_images"] += len(page_images)
 
         # Text presence
         if len(stripped) > 50:
@@ -96,6 +105,12 @@ def scan_pdf(pdf_path):
                 scan["equations"].append(i)
 
     doc.close()
+
+    # Fully-scanned flag: true when every page is in scanned[] (zero text layer)
+    scan["fully_scanned"] = (
+        len(scan["scanned"]) == scan["page_count"] and scan["page_count"] > 0
+    )
+
     return scan
 
 
@@ -119,7 +134,9 @@ def main():
     cl = len(scan["complex_layout"])
     s = len(scan["scanned"])
     e = len(scan["equations"])
-    print(f"{n} pages scanned: {t} text, {tb} tables, {cl} complex layout, {s} scanned/empty, {e} equations.")
+    img = scan["total_images"]
+    fs_tag = " (FULLY SCANNED -- no text layer)" if scan["fully_scanned"] else ""
+    print(f"{n} pages scanned: {t} text, {tb} tables, {cl} complex layout, {s} scanned/empty{fs_tag}, {e} equations, {img} embedded images.")
     for note in scan["confidence_notes"]:
         print(f"  Note: {note}")
 

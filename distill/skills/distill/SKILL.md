@@ -5,7 +5,18 @@ description: Distill source documents (PDF, image, web) with project integration
 
 # Source Distillation
 
-**ENFORCEMENT RULE — applies to all sub-skills invoked below**: Any step in any sub-skill that says MANDATORY POPUP MUST use the `AskUserQuestion` tool. You MUST call `AskUserQuestion`, you MUST wait for the response, and you MUST NOT continue past that step until the user has answered. This is non-negotiable.
+**ENFORCEMENT RULE — applies to all sub-skills invoked below.**
+
+Sub-skills use two interaction levels:
+
+| Marker | When | How |
+|--------|------|-----|
+| **⚠ MANDATORY POPUP** | Quick binary/ternary decisions (source label, install offer, proceed/stop) | `AskUserQuestion` with 2-3 short options |
+| **⚠ MANDATORY REVIEW** | Dense information the user needs to read (scan summary, interpretation review, integration results) | Print information as **plain text** first, then `AskUserQuestion` with brief decision options only. The popup is the decision; the information is the plain text above it. |
+
+**⚠ FULL STOP protocol — applies to BOTH levels:**
+
+After calling `AskUserQuestion`, you MUST stop generating. Do not continue to the next step. Do not prefetch, prepare, or begin any subsequent work. Do not write "while we wait" or "in the meantime." Your turn ENDS with the `AskUserQuestion` call. The next step begins ONLY in your next turn, AFTER the user has responded. This is a hard gate, not a courtesy pause. If you catch yourself writing anything after the `AskUserQuestion` call, STOP IMMEDIATELY.
 
 Distill a source document into structured reference knowledge.
 

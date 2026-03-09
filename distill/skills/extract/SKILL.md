@@ -51,6 +51,8 @@ If no project config exists, the parent `distill` skill handles differentiation 
 - If metadata found: Present via `AskUserQuestion` with options: "[Constructed label] — use this" / "I'll provide a different label". Example label: `Smith_Jones_MachineLearning_2024_Paper`.
 - If no metadata: Use `AskUserQuestion` to ask for a descriptive label (2-4 words) — e.g., `NetworkDiagram_Image`, `WhiteboardSessionMarch_Image`.
 
+**⚠ FULL STOP** — see parent skill ENFORCEMENT RULE. Your turn ends after the AskUserQuestion call.
+
 **Step L4: Record and propagate** -- The confirmed label becomes `[Source-Label]` for all subsequent steps:
 - Source file: `[source_dir]/[Source-Label].[ext]` (multi-part: `[Source-Label]_pg[range].[ext]`)
 - Distillation: `[distillation_dir]/[Source-Label].md`
@@ -88,9 +90,42 @@ Run the bundled scan script:
 python ${CLAUDE_PLUGIN_ROOT}/scripts/distill_scan.py "<pdf_path>" --output _distill_scan.json
 ```
 
-Read `_distill_scan.json` for structured scan data (page lists for tables, complex_layout, scanned, equations, text_pages).
+Read `_distill_scan.json` for structured scan data (page lists for tables, complex_layout, scanned, equations, text_pages, image_pages, total_images, fully_scanned).
 
-**⚠ MANDATORY POPUP**: Present the scan summary via `AskUserQuestion`. Include page counts, detected features (tables, equations, scanned pages, complex layout), and confidence notes. Options: "Proceed with extraction" / "I have notes about this scan". Low-confidence detections proceed normally but note them in the distillation header under `> Scan notes:`.
+**⚠ MANDATORY REVIEW**: Present the scan summary as **plain text** (not in a popup). Include:
+- Page counts by category (text, tables, complex layout, scanned/empty, equations)
+- Total embedded images and image page count
+- Fully-scanned flag (if true, prominently note: "This PDF has NO text layer -- all content is in scanned images")
+- Confidence notes (one line each)
+- Which extraction routes will be used for which pages
+
+Then call `AskUserQuestion` with ONLY: "Proceed with extraction" / "I have notes about this scan". The popup has ONLY the decision -- all information is in the plain text above. Low-confidence detections proceed normally but note them in the distillation header under `> Scan notes:`.
+
+**⚠ FULL STOP** -- see parent skill ENFORCEMENT RULE. Your turn ends after the AskUserQuestion call. Do not proceed until the user responds.
+
+### Phase 1.5: Figure Budget Gate
+
+After the scan review, before text extraction, check if the document is image-heavy:
+
+```
+figure_candidates = len(scan["scanned"]) + len(scan["tables"]) +
+                    len(scan["complex_layout"]) + len(scan["equations"]) +
+                    len([p for p in scan["image_pages"] if p in scan["text_pages"]])
+```
+
+**If figure_candidates > 15**: **⚠ MANDATORY POPUP** with options:
+- "Extract all [N] figures/pages"
+- "Sample every [M]th page (~10-15 items)" -- compute M = max(1, N // 12)
+- "OCR text only -- skip figure extraction entirely"
+- "I'll specify which pages"
+
+**⚠ FULL STOP** -- see parent skill. Wait for user response.
+
+Store the user's choice as the extraction strategy. When sampling, modify the scan JSON passed to `distill_figures.py` to include only the sampled page indices. When "OCR text only," skip the Figure Handling Pipeline entirely. When "I'll specify," ask the user for page ranges and filter accordingly.
+
+**If figure_candidates ≤ 15**: proceed normally (no gate).
+
+### Phase 1.6: Text Extraction
 
 **Text extraction**: Run the bundled extraction script (writes UTF-8 to file, never stdout):
 ```
@@ -124,8 +159,16 @@ Use PyMuPDF text directly. No specialist needed.
 
 **Route D -- Scanned pages** (`scan["scanned"]` non-empty)
 1. If Docling installed -> use Docling OCR mode.
-2. If `demand-install` -> trigger Demand-Install Protocol ("[N] pages appear scanned.").
-3. If unavailable -> route to Figure Pipeline (render as images, decompose via Claude vision).
+2. If pytesseract installed -> use pytesseract page-by-page OCR (render page via `page.get_pixmap(dpi=300)`, pass image to `pytesseract.image_to_string()`).
+3. If Docling is `demand-install` -> trigger Demand-Install Protocol ("[N] pages appear scanned."). Offer pytesseract as lighter alternative: "Install pytesseract (~1MB) instead?" with link to Tesseract binary.
+4. If all OCR tools unavailable -> route to Vision OCR (see below).
+
+**Vision OCR fallback** (last resort for scanned pages):
+- Render pages as images via `page.get_pixmap(dpi=200)` and read via Claude vision.
+- **Batch in chunks of 5 pages** (not one-by-one). Print progress: "OCR via vision: pages 1-5 of [N]..."
+- After each batch: if pages are purely decorative (blank, dividers, repetitive headers), note and skip similar pages in remaining batches.
+- **For fully_scanned PDFs with > 20 scanned pages**: the Figure Budget Gate (Phase 1.5) MUST fire first. Do NOT begin 20+ vision calls without user consent.
+- Budget gate options for vision OCR: "Process all [N] pages" / "Sample every [M]th page" / "I'll specify pages" / "Skip -- I'll provide text manually".
 
 **Route E -- Equations** (`scan["equations"]` non-empty)
 1. If Marker installed -> use Marker (converts to Markdown with LaTeX).
@@ -311,12 +354,15 @@ When a specialist tool is needed but not installed, and its tooling profile stat
 
 **⚠ MANDATORY POPUP**: You MUST use `AskUserQuestion` to offer tool installation. Do NOT install without explicit user consent. Do NOT skip — present the offer and wait.
 
+**⚠ FULL STOP** — see parent skill ENFORCEMENT RULE. Your turn ends after the AskUserQuestion call.
+
 1. **Explain what was detected**: "This PDF contains [tables / multi-column layout / scanned pages / equations]."
 2. **Explain what the tool does**: One sentence on its capability for this content.
 3. **Offer install** via `AskUserQuestion` with options: "Install [tool] now" / "Skip — use fallback". For tools that may be needed later, add "Install later when needed" as a third option. Include exact command and size:
    - pdfplumber: `pip install pdfplumber` (<1MB)
    - Docling: `pip install docling` (~500MB model on first use)
    - Marker: `pip install marker-pdf` (~200MB, optional GPU)
+   - pytesseract: `pip install pytesseract` (<1MB) + Tesseract binary (Windows: https://github.com/UB-Mannheim/tesseract/wiki; Linux: `apt install tesseract-ocr`; macOS: `brew install tesseract`)
    - GROBID: `docker pull lfoppiano/grobid:0.8.1 && docker run -d --name grobid -p 8070:8070 lfoppiano/grobid:0.8.1` (~2GB)
    - yt-dlp: `pip install yt-dlp` (~10MB, required for YouTube)
    - faster-whisper: `pip install faster-whisper` (<5MB install, ~150MB model on first use)
