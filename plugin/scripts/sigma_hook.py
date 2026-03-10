@@ -683,6 +683,66 @@ def record_grid_hit(buffer_dir, concept_ids):
 
 
 # ---------------------------------------------------------------------------
+# Tick counter — periodic resolution check trigger
+# ---------------------------------------------------------------------------
+
+TICK_THRESHOLD = 50  # Flag resolution_due every N messages
+
+def _increment_tick(buffer_dir):
+    """Increment per-message tick counter. Lightweight (~1ms)."""
+    ticks_path = os.path.join(buffer_dir, '.sigma_ticks')
+    count = 0
+    try:
+        if os.path.exists(ticks_path):
+            with open(ticks_path, 'r') as f:
+                count = int(f.read().strip() or '0')
+    except (ValueError, OSError):
+        pass
+    count += 1
+    try:
+        with open(ticks_path, 'w') as f:
+            f.write(str(count))
+    except OSError:
+        pass
+
+
+def _check_resolution_due(buffer_dir):
+    """Check if tick threshold reached. Returns True and resets if so."""
+    ticks_path = os.path.join(buffer_dir, '.sigma_ticks')
+    try:
+        if os.path.exists(ticks_path):
+            with open(ticks_path, 'r') as f:
+                count = int(f.read().strip() or '0')
+            if count >= TICK_THRESHOLD:
+                with open(ticks_path, 'w') as f:
+                    f.write('0')
+                return True
+    except (ValueError, OSError):
+        pass
+    return False
+
+
+def _with_resolution(output, resolution_due):
+    """Add resolution check flag to hook output if tick threshold reached.
+
+    Appends a lightweight note to systemMessage when resolution is due.
+    If the hook would normally exit silently (empty output), emits a
+    standalone resolution notice instead. The AI can choose to act on it
+    or not — purely informational.
+    """
+    if not resolution_due:
+        return output
+    if not output or output == {}:
+        return {
+            "suppressOutput": True,
+            "systemMessage": "resolution check due — run alpha-resolve"
+        }
+    if 'systemMessage' in output:
+        output['systemMessage'] += ' | resolution check due'
+    return output
+
+
+# ---------------------------------------------------------------------------
 # Main — gated cascade
 # ---------------------------------------------------------------------------
 
@@ -702,6 +762,10 @@ def main():
     if not buffer_dir:
         emit_empty()
 
+    # TICK COUNTER: Increment per-message counter for periodic resolution checks
+    _increment_tick(buffer_dir)
+    resolution_due = _check_resolution_due(buffer_dir)
+
     # GATE 0a: Post-compaction relay — inject buffer summary if marker present
     check_compact_relay(buffer_dir, cwd)
 
@@ -712,7 +776,7 @@ def main():
     # Extract keywords (dynamic cap based on prompt size)
     keywords = extract_keywords(user_prompt)
     if not keywords:
-        emit_empty()
+        emit(_with_resolution({}, resolution_due))
 
     # GATE 0c: Grid lookup — pre-computed relevance grid (O(1) lookup)
     # If grid exists and produces a hit, emit directly (skip IDF scoring).
@@ -721,7 +785,9 @@ def main():
     if grid_result is not None:
         injection, concept_ids = grid_result
         record_grid_hit(buffer_dir, concept_ids)
-        emit({"suppressOutput": True, "systemMessage": injection})
+        emit(_with_resolution(
+            {"suppressOutput": True, "systemMessage": injection},
+            resolution_due))
 
     # GATE 1: Load suppress list (zero cost if file absent)
     suppress_list = load_suppress_list(buffer_dir)
@@ -759,22 +825,26 @@ def main():
                                   max_inject=max_inject)
             if hot_hits:
                 injection = format_hot_hits(hot_hits)
-                emit({"suppressOutput": True, "systemMessage": injection})
+                emit(_with_resolution(
+                    {"suppressOutput": True, "systemMessage": injection},
+                    resolution_due))
 
     # -----------------------------------------------------------------------
     # LEVEL 2: Alpha concept index (fallthrough — hot skipped or missed)
     # -----------------------------------------------------------------------
     if not concept_index:
-        emit_empty()
+        emit(_with_resolution({}, resolution_due))
 
     concept_matches = match_alpha_concepts(
         keywords, concept_index, suppress_list, idf_weights, threshold,
         score_exact=score_exact, min_score=min_score, max_inject=max_inject)
     if not concept_matches:
-        emit_empty()
+        emit(_with_resolution({}, resolution_due))
 
     injection = format_alpha_hits(concept_matches, sources_data)
-    emit({"suppressOutput": True, "systemMessage": injection})
+    emit(_with_resolution(
+        {"suppressOutput": True, "systemMessage": injection},
+        resolution_due))
 
 
 if __name__ == '__main__':

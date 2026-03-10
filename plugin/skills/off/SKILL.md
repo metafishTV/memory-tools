@@ -414,6 +414,24 @@ This ensures the grid reflects the new session's orientation before the next `/b
 
 If `remote_backup` is true in the hot layer, follow the commit with `git push`.
 
+### Step 14c: Resolution Check (if alpha exists)
+
+**Guard**: Only run if `alpha/index.json` exists in the buffer directory.
+
+Run the resolution queue scanner to surface unresolved concept entries:
+
+```bash
+buffer_manager.py alpha-resolve --buffer-dir .claude/buffer/
+```
+
+If unresolved entries exist, print a brief summary after the grid rebuild:
+
+```
+Resolution queue: [N] unresolved entries ([M] ready, [K] awaiting design)
+```
+
+**Do NOT block** — this is informational only. The user decides whether to resolve now or defer. Do NOT auto-resolve. Do NOT prompt for resolution at session end — just surface the count so the user is aware.
+
 ### Step 15: Confirm
 
 Run `validate --buffer-dir .claude/buffer/` to get layer sizes, then tell the user:

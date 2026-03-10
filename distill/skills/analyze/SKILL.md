@@ -307,6 +307,40 @@ Then call `AskUserQuestion` with ONLY: "Looks good — proceed with integration"
 
 **⚠ FULL STOP** — see parent skill ENFORCEMENT RULE. Your turn ends after the AskUserQuestion call.
 
+## Analysis Stats Output
+
+**After analysis completes** (all passes done, interpretation written), append analysis statistics to `.claude/buffer/.distill_stats` for the end-to-end distillation report.
+
+Read the existing `.distill_stats` file (written by the `extract` skill), then add the `analysis` key:
+
+```json
+{
+  "analysis": {
+    "key_concepts": 0,
+    "equations": 0,
+    "figures_decomposed": 0,
+    "register": "[analytic / continental / empirical / formal-mathematical / practitioner / mixed]",
+    "interpretation": {
+      "mappings": 0,
+      "confirms": 0,
+      "extends": 0,
+      "challenges": 0,
+      "novel": 0,
+      "open_questions": 0
+    }
+  }
+}
+```
+
+**Guard**: Only write if `.claude/buffer/.distill_stats` exists. If the extract skill didn't write it (no buffer directory), skip silently.
+
+Populate counts from the actual distillation and interpretation outputs:
+- `key_concepts`: rows in Key Concepts table
+- `equations`: equations in Equations & Formal Models section (0 if section absent)
+- `figures_decomposed`: figures in Figures section (0 if section absent)
+- `interpretation.mappings`: rows in Project Significance table (0 if pure_mode)
+- Relationship counts from the Relationship column of the Project Significance table
+
 ## Troubleshooting Decision Tree
 
 **DO NOT blindly retry tools.** Follow this tree on errors:

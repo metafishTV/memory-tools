@@ -298,22 +298,33 @@ The goal: a user who chose `thematic` should never see convergence network instr
 
 ### Sections to Always Include (all types)
 
-Extraction pipeline, figure handling, output template (distillation file), style conventions, demand-install protocol, troubleshooting decision tree, error logging.
+**Do NOT duplicate into the project skill** — these live in the plugin-level skills (`distill:extract`, `distill:analyze`, `distill:integrate`) and are loaded at invocation time:
+- Extraction pipeline, figure handling, demand-install protocol → `distill:extract`
+- Output template, style conventions, voice rule, troubleshooting → `distill:analyze`
+- Error logging rules → `distill:integrate`
+
+**DO include in the project skill** (project-specific content only):
+- Configuration (paths, framework name, tooling profile)
+- Project terminology glossary (grows per distillation)
+- Post-distillation update commands (project-specific alpha paths, buffer commands, INDEX.md format)
+- Known Issues table (project-specific learning log)
+- A pipeline pointer: `> Pipeline details: see distill:extract, distill:analyze, distill:integrate plugin skills`
 
 ### Content Inclusion Matrix (generation guide only -- do NOT include in project skill)
 
-| Section | concept_convergence | thematic | narrative | none | custom |
-|---------|:--:|:--:|:--:|:--:|:--:|
-| Extraction pipeline | Y | Y | Y | Y | Y |
-| Figure handling | Y | Y | Y | Y | Y |
-| Pass 4 (relational) | Y | Y | Y | N | varies |
-| Interpretation file | Y | Y | Y | N | varies |
-| Post-updates: INDEX.md | Y | Y | Y | Y | Y |
-| Post-updates: buffer | Y | Y | Y | N | varies |
-| Post-updates: convergence network | Y | N | N | N | varies |
-| Post-updates: MEMORY.md | Y | Y | Y | N | varies |
-| Troubleshooting | Y | Y | Y | Y | Y |
-| Error logging | Y | Y | Y | Y | Y |
+| Section | In project skill? | concept_convergence | thematic | narrative | none | custom |
+|---------|:-:|:--:|:--:|:--:|:--:|:--:|
+| Extraction pipeline | **NO** (plugin) | — | — | — | — | — |
+| Figure handling | **NO** (plugin) | — | — | — | — | — |
+| Output template | **NO** (plugin) | — | — | — | — | — |
+| Style/voice/troubleshooting | **NO** (plugin) | — | — | — | — | — |
+| Pass 4 (relational) | **NO** (plugin) | — | — | — | — | — |
+| Interpretation file template | **NO** (plugin) | — | — | — | — | — |
+| Post-updates: INDEX.md | YES | Y | Y | Y | Y | Y |
+| Post-updates: buffer | YES | Y | Y | Y | N | varies |
+| Post-updates: convergence network | YES | Y | N | N | N | varies |
+| Post-updates: MEMORY.md | YES | Y | Y | Y | N | varies |
+| Known Issues table | YES | Y | Y | Y | Y | Y |
 
 ### Buffer Schema by Type
 

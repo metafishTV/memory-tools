@@ -369,6 +369,42 @@ For **non-PDF images**: Use Read tool directly (multimodal decomposition).
 
 ---
 
+## Extraction Stats Output
+
+**After extraction completes** (any route), write extraction statistics to `.claude/buffer/.distill_stats` for the end-to-end distillation report. This file is consumed by the `integrate` skill and deleted during cleanup.
+
+```json
+{
+  "source_label": "[Source-Label]",
+  "source_type": "[PDF | web | image | recording]",
+  "extraction_date": "[YYYY-MM-DD]",
+  "pages": {
+    "total": 0,
+    "text": 0,
+    "tables": 0,
+    "complex_layout": 0,
+    "scanned": 0,
+    "equations": 0,
+    "image_pages": 0
+  },
+  "figures": {
+    "extracted": 0,
+    "skipped": 0,
+    "verification_passed": 0,
+    "verification_failed": 0
+  },
+  "routes_used": ["A", "B"],
+  "tools_used": ["pymupdf", "pdfplumber"],
+  "scan_notes": []
+}
+```
+
+**Guard**: Only write if `.claude/buffer/` exists. If no buffer directory, skip silently — stats are optional metadata for the integration report.
+
+For non-PDF sources, populate only the relevant fields (e.g., web sources: `source_type`, `source_label`, `extraction_date`; leave `pages` and `routes_used` empty).
+
+---
+
 ## Demand-Install Protocol
 
 When a specialist tool is needed but not installed, and its tooling profile status is `demand-install`:

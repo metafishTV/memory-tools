@@ -2574,6 +2574,87 @@ def cmd_alpha_grid_build(args):
 
 
 # ---------------------------------------------------------------------------
+# Subcommand: alpha-resolve (resolution bin for unresolved concepts)
+# ---------------------------------------------------------------------------
+
+def cmd_alpha_resolve(args):
+    """Check for unresolved concept entries and present resolution candidates.
+
+    Scans alpha index for entries with concept='?' and extracts suggested
+    concept names from their .md file content (Maps to / Maps-to fields).
+    Outputs a JSON summary of candidates for user review.
+    """
+    buf_dir = Path(args.buffer_dir)
+    index = read_alpha_index(buf_dir)
+    if not index:
+        print(json.dumps({'status': 'error', 'message': 'No alpha bin found'}))
+        return
+
+    entries = index.get('entries', {})
+    alpha_dir = buf_dir / 'alpha'
+    queue = []
+
+    for eid, einfo in entries.items():
+        if einfo.get('concept', '') not in ('?', ''):
+            continue
+        suggestion = None
+        md_path = alpha_dir / einfo.get('file', '')
+        if md_path.exists():
+            try:
+                text = md_path.read_text(encoding='utf-8')
+                for line in text.splitlines():
+                    if line.startswith('**Maps to**:') or line.startswith('**Maps-to**:'):
+                        suggestion = line.split(':', 1)[1].strip()[:80]
+                        break
+            except OSError:
+                pass
+        status = 'awaits_design' if einfo.get('source', '') == '_forward-notes' else 'ready'
+        queue.append({
+            'id': eid,
+            'source': einfo.get('source', '?'),
+            'file': einfo.get('file', '?'),
+            'suggestion': suggestion,
+            'status': status,
+        })
+
+    if getattr(args, 'auto', False) and queue:
+        resolved = 0
+        for item in queue:
+            if item['suggestion'] and item['status'] == 'ready':
+                # Apply suggestion as concept name
+                concept_name = item['suggestion'].split(',')[0].strip().replace(' ', '_')[:60]
+                entries[item['id']]['concept'] = concept_name
+                resolved += 1
+        if resolved > 0:
+            idx_path = alpha_index_path(buf_dir)
+            write_json(idx_path, index)
+        print(json.dumps({
+            'status': 'ok',
+            'total_unresolved': len(queue),
+            'auto_resolved': resolved,
+            'remaining': len(queue) - resolved,
+        }, indent=2))
+        return
+
+    # Write queue to resolution file for reference
+    queue_path = buf_dir / '.resolution_queue'
+    with open(queue_path, 'w', encoding='utf-8') as f:
+        for item in queue:
+            f.write(f"{item['id']}  {item['source']}  "
+                    f"{item['suggestion'] or '(none)'}  "
+                    f"{item['status']}\n")
+
+    result = {
+        'status': 'ok',
+        'total_unresolved': len(queue),
+        'ready': sum(1 for q in queue if q['status'] == 'ready'),
+        'awaits_design': sum(1 for q in queue if q['status'] == 'awaits_design'),
+        'candidates': queue,
+    }
+    print(json.dumps(result, indent=2))
+
+
+# ---------------------------------------------------------------------------
 # Subcommand: alpha-write
 # ---------------------------------------------------------------------------
 
@@ -3169,6 +3250,13 @@ def main():
     p_alpha_grid.add_argument('--dry-run', action='store_true',
                                help='Print grid to stdout without writing file')
     p_alpha_grid.set_defaults(func=cmd_alpha_grid_build)
+
+    # --- alpha-resolve ---
+    p_alpha_resolve = subparsers.add_parser('alpha-resolve', parents=[buf_parent],
+        help='Check for unresolved concept entries and present resolution candidates')
+    p_alpha_resolve.add_argument('--auto', action='store_true',
+                                  help='Auto-apply suggested concept names for ready entries')
+    p_alpha_resolve.set_defaults(func=cmd_alpha_resolve)
 
     args = parser.parse_args()
     if not args.command:

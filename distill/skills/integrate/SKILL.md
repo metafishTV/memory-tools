@@ -191,7 +191,50 @@ These run silently (~100ms total for typical corpus). The grid rebuild ensures t
 
 ### Step 6: Integration Results Summary
 
-Print a **plain text** summary of all integration actions taken. This is informational — no popup or user decision needed. The pipeline proceeds to cleanup automatically.
+Print an **end-to-end distillation report** summarizing the full pipeline. This is informational — no popup or user decision needed. The pipeline proceeds to cleanup automatically.
+
+**Stats collection**: Read `.claude/buffer/.distill_stats` if it exists. This file is written by the `extract` skill (extraction stats) and appended by the `analyze` skill (analysis stats). If the file doesn't exist, fall back to the minimal summary format below.
+
+**Full report** (when `.distill_stats` is available):
+
+```
+═══════════════════════════════════════════════════
+DISTILLATION REPORT: [Source-Label]
+═══════════════════════════════════════════════════
+
+Source:      [filename] ([page count] pages)
+Label:       [Source-Label]
+Extracted:   [date]
+
+Content:
+  Text pages:    [N]
+  Tables:        [N] (via [route])
+  Figures:       [N] extracted, [M] skipped
+  Equations:     [N] pages with math content
+
+Distillation:
+  File:          [distillation-dir]/[Source-Label].md
+  Key concepts:  [N] identified
+  Top concepts:  [list top 5 by significance]
+
+Interpretation:
+  File:          [interpretations-dir]/[Source-Label].md
+  Mappings:      [N] concepts mapped to project framework
+  Relationship:  [N] confirms, [N] extends, [N] challenges, [N] novel
+
+Integration:
+  INDEX.md:      [updated | already present]
+  Alpha w:       [N] entries (w:XXX–w:YYY)
+  Alpha cw:      [N] entries (cw:XXX–cw:YYY)
+  Grid rebuild:  [N] primes, [M] clusters
+  MEMORY.md:     [updated N defs | skipped]
+  Resolution:    [N] entries queued for concept resolution
+
+Known Issues:    [clean run | N issues logged]
+═══════════════════════════════════════════════════
+```
+
+**Minimal summary** (when `.distill_stats` is not available — e.g., File-Only Mode):
 
 ```
 --- Integration Complete ---
@@ -203,6 +246,12 @@ MEMORY.md: [updated — N definitions added | skipped — cap exceeded | skipped
 Validation: [passed | FAILED — see Known Issues]
 Known Issues: [clean run | N issues logged]
 ```
+
+**Resolution queue**: After printing the report, check for unresolved concept entries:
+```bash
+buffer_manager.py alpha-resolve --buffer-dir .claude/buffer/
+```
+If any entries have `concept="?"`, include the count in the "Resolution" line of the report. Do NOT auto-resolve — just report the count.
 
 Include the summary even in File-Only Mode (with buffer items reported as "skipped — no buffer").
 
@@ -265,11 +314,12 @@ Delete all temporary files created during this distillation:
 | `_distill_text.txt` | distill_extract.py output | Yes (PDF sources) |
 | `_manifest.json` | distill_figures.py output | Only if figures detected |
 | `.claude/buffer/.distill_active` | integration marker | Yes (if buffer exists) |
+| `.claude/buffer/.distill_stats` | extract + analyze stats | Yes (if buffer exists) |
 
 Cleanup command:
 
 ```bash
-rm -f _distill_scan.json _distill_text.txt _manifest.json .claude/buffer/.distill_active
+rm -f _distill_scan.json _distill_text.txt _manifest.json .claude/buffer/.distill_active .claude/buffer/.distill_stats
 ```
 
 The bundled scripts in the skills directory are permanent -- do NOT delete them. Only their output files are temporary.
