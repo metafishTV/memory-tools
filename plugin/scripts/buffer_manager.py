@@ -1973,6 +1973,19 @@ def cmd_alpha_validate(args):
     if missing_fields:
         issues.insert(0, f"Schema issues: {missing_fields} entries with missing fields")
 
+    # Check 4: Distillation file references
+    distilled_dir = _find_distilled_dir(buf_dir)
+    if distilled_dir:
+        stale_refs = []
+        for eid, entry_info in entries.items():
+            dist_file = entry_info.get('distillation')
+            if dist_file and not (distilled_dir / dist_file).is_file():
+                stale_refs.append(eid)
+        if stale_refs:
+            issues.append(f"Stale distillation references: {len(stale_refs)}")
+            for eid in stale_refs[:10]:
+                issues.append(f"  Stale: {eid} -> {entries[eid]['distillation']}")
+
     # Summary
     summary = index.get('summary', {})
     info.append(f"Framework entries: {summary.get('total_framework', 0)}")

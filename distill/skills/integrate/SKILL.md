@@ -97,7 +97,7 @@ buffer_manager.py alpha-query --buffer-dir .claude/buffer/ --source [kebab-case-
    echo '[{"id":"w:NNN","body":"## Definition\n...updated content..."}]' | buffer_manager.py alpha-enrich --buffer-dir .claude/buffer/
    ```
 3. **No match** (genuinely new concept): Create via standard `alpha-write` below.
-4. **Orphaned** (old entry's concept key not in new interpretation): Add `"orphaned_by_redistill": "[date]"` to the entry in `index.json`. Do NOT delete — convergence web edges may depend on it. Log in validation_log with status `ORPHANED`.
+4. **Orphaned** (old entry's concept key not in new interpretation): Add `"orphaned_by_redistill": "[date]"` to the entry in `index.json`. Clear `distillation` and `marker` fields (the old distillation no longer has this concept). The entry falls back to `.md` file reading via `alpha-query`. Do NOT delete the entry — convergence web edges may depend on it. Log in validation_log with status `ORPHANED`.
 
 **`delete` mode**:
 1. Delete all existing alpha `.md` files for this source:

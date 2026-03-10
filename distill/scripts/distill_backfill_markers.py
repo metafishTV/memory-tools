@@ -88,6 +88,7 @@ def insert_concept_markers(lines):
     """Insert concept markers around Key Concepts table rows. Returns (new_lines, concepts_found)."""
     new_lines = []
     concepts_found = []
+    seen_keys = set()  # Dedup: prevent duplicate markers for same normalized key
     in_key_concepts = False
     past_header_row = False
     past_separator = False
@@ -125,7 +126,8 @@ def insert_concept_markers(lines):
                 if len(cols) >= 2 and cols[1]:
                     concept_name = cols[1]
                     concept_key = normalize_concept_key(concept_name)
-                    if concept_key:
+                    if concept_key and concept_key not in seen_keys:
+                        seen_keys.add(concept_key)
                         concepts_found.append((concept_key, concept_name))
                         new_lines.append(f"<!-- CONCEPT:{concept_key} -->\n")
                         new_lines.append(line)
