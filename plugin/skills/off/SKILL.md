@@ -394,9 +394,27 @@ git commit -m "handoff: <brief description of session>"
 
 If tower files were created, include them in the commit as well. MEMORY.md changes (from Step 11) are NOT committed — MEMORY.md lives outside the repo in the Claude projects directory and is managed separately.
 
+### Step 14b: Grid Rebuild (if alpha exists)
+
+**Guard**: Only run if `alpha/index.json` exists in the buffer directory.
+
+```bash
+buffer_manager.py alpha-reinforce --buffer-dir .claude/buffer/
+buffer_manager.py alpha-clusters --buffer-dir .claude/buffer/
+buffer_manager.py alpha-grid-build --buffer-dir .claude/buffer/
+```
+
+Then amend the commit to include the updated grid:
+```bash
+git add .claude/buffer/alpha/index.json .claude/buffer/relevance_grid.json
+git commit --amend --no-edit
+```
+
+This ensures the grid reflects the new session's orientation before the next `/buffer:on`.
+
 If `remote_backup` is true in the hot layer, follow the commit with `git push`.
 
-### Step 14: Confirm
+### Step 15: Confirm
 
 Run `validate --buffer-dir .claude/buffer/` to get layer sizes, then tell the user:
 

@@ -29,13 +29,22 @@ from pathlib import Path
 # Scoring functions (pluggable interface)
 # ---------------------------------------------------------------------------
 
-def default_scoring(degree, diversity, is_prime):
-    """Default alpha score: degree * diversity_bonus * primeness_bonus.
+def tap_scoring(degree, diversity, is_prime, ref_count=0, recency=0.0):
+    """TAP score: adjacent possibility — per-concept structural importance.
 
-    Interface contract: (int, int, bool) -> float
-    Can be swapped for euler_scoring or any other function with same signature.
+    Higher adjacency in the convergence web = higher TAP.
+    Temporal feedback from sigma_hits boosts operationally active concepts.
+
+    Interface: (int, int, bool, int, float) -> float
+    Can be swapped for any function with same signature.
     """
-    return degree * (1.0 + 0.1 * (diversity - 1)) * (1.5 if is_prime else 1.0)
+    base = degree * (1.0 + 0.1 * (diversity - 1)) * (1.5 if is_prime else 1.0)
+    temporal_boost = 1.0 + 0.05 * min(ref_count, 20)  # cap at 2x boost
+    return base * temporal_boost
+
+
+# Backward compatibility alias
+default_scoring = tap_scoring
 
 
 # ---------------------------------------------------------------------------
@@ -43,25 +52,31 @@ def default_scoring(degree, diversity, is_prime):
 # ---------------------------------------------------------------------------
 
 def compute_alpha_score(concept_id, reinforcement_data, scoring_fn=None):
-    """Compute structural importance score for a concept.
+    """Compute TAP (adjacent possibility) score for a concept.
+
+    TAP = structural importance in the convergence web, boosted by
+    temporal feedback from sigma hits (bidirectional alpha-sigma flow).
 
     Args:
         concept_id: w: entry ID
-        reinforcement_data: {w_id: {degree, source_diversity, is_prime}}
-        scoring_fn: pluggable scoring function (default: default_scoring)
+        reinforcement_data: {w_id: {degree, source_diversity, is_prime,
+                                     ref_count, last_ref, trend}}
+        scoring_fn: pluggable scoring function (default: tap_scoring)
 
     Returns:
-        float score (0.0 if concept has no reinforcement data)
+        float TAP score (0.0 if concept has no reinforcement data)
     """
     if scoring_fn is None:
-        scoring_fn = default_scoring
+        scoring_fn = tap_scoring
     rdata = reinforcement_data.get(concept_id, {})
     degree = rdata.get('degree', 0)
     diversity = rdata.get('source_diversity', 0)
     is_prime = rdata.get('is_prime', False)
+    ref_count = rdata.get('ref_count', 0)
+    recency = 0.0  # reserved for date-based recency weighting
     if degree == 0:
         return 0.0
-    return scoring_fn(degree, diversity, is_prime)
+    return scoring_fn(degree, diversity, is_prime, ref_count, recency)
 
 
 # ---------------------------------------------------------------------------
@@ -190,7 +205,9 @@ def build_grid(index, hot, scoring_fn=None, top_n=5):
                 'sigma': round(sigma, 2),
             })
     global_scores.sort(key=lambda x: x['score'], reverse=True)
-    cells['global'] = {'concepts': global_scores[:top_n]}
+    global_top = global_scores[:top_n]
+    tip_score = sum(c['score'] for c in global_top)
+    cells['global'] = {'concepts': global_top, 'tip_score': round(tip_score, 2)}
 
     # --- Thread cells ---
     thread_names = []
@@ -220,15 +237,17 @@ def build_grid(index, hot, scoring_fn=None, top_n=5):
                     'score': round(combined, 2),
                 })
         thread_scores.sort(key=lambda x: x['score'], reverse=True)
+        thread_top = thread_scores[:top_n]
+        tip_score = sum(c['score'] for c in thread_top)
         cell_key = f'thread:{thread_name}'
-        cells[cell_key] = {'concepts': thread_scores[:top_n]}
+        cells[cell_key] = {'concepts': thread_top, 'tip_score': round(tip_score, 2)}
 
     # Build phase text from active_work
     active_work = hot.get('active_work', {})
     phase = active_work.get('phase', '')
 
     grid = {
-        'schema_version': 1,
+        'schema_version': 2,
         'computed': datetime.now().isoformat(timespec='seconds'),
         'coordinates': {
             'phase': phase,

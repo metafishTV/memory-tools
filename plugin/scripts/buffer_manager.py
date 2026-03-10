@@ -1500,18 +1500,23 @@ def _parse_concept_key(concept_key):
     return concept_key.strip().lower() or None, None
 
 
-def alpha_update_index(index, new_id, entry_type, source_folder, concept_key, filename):
+def alpha_update_index(index, new_id, entry_type, source_folder, concept_key,
+                       filename, extra_fields=None):
     """Update all index structures for a new alpha entry.
 
     Handles: entries, sources, concept_index, source_index, summary counts.
+    extra_fields: optional dict merged into the entry (convergence_tag, origin, etc.)
     """
     # entries
-    index.setdefault('entries', {})[new_id] = {
+    entry = {
         "source": source_folder,
         "file": filename,
         "concept": concept_key,
         "type": entry_type
     }
+    if extra_fields:
+        entry.update(extra_fields)
+    index.setdefault('entries', {})[new_id] = entry
 
     # sources
     sources = index.setdefault('sources', {})
@@ -1867,6 +1872,84 @@ def cmd_alpha_validate(args):
 
 
 # ---------------------------------------------------------------------------
+# Backfill: convergence_tag + origin for existing entries
+# ---------------------------------------------------------------------------
+
+def backfill_convergence_tags(buf_dir, index):
+    """Scan cw: .md files and backfill convergence_tag + origin into index.
+
+    Parses **Synthesis**: [tag] lines from .md files.
+    Sets origin based on source folder heuristic.
+    Returns count of entries updated.
+    """
+    alpha_dir = buf_dir / 'alpha'
+    entries = index.get('entries', {})
+    updated = 0
+
+    for eid, einfo in entries.items():
+        changed = False
+
+        # Backfill convergence_tag for cw: entries
+        if eid.startswith('cw:') and 'convergence_tag' not in einfo:
+            md_path = alpha_dir / einfo.get('file', '')
+            if md_path.exists():
+                try:
+                    text = md_path.read_text(encoding='utf-8')
+                    for line in text.splitlines():
+                        if line.startswith('**Synthesis**:'):
+                            tag_match = re.match(
+                                r'\*\*Synthesis\*\*:\s*\[(\w+)\]', line)
+                            if tag_match:
+                                einfo['convergence_tag'] = tag_match.group(1)
+                                changed = True
+                            break
+                except OSError:
+                    pass
+
+        # Backfill origin for all entries
+        if 'origin' not in einfo:
+            source = einfo.get('source', '')
+            if source in ('_framework', 'unificity'):
+                einfo['origin'] = 'session'
+            else:
+                einfo['origin'] = 'distill'
+            changed = True
+
+        if changed:
+            updated += 1
+
+    return updated
+
+
+def _read_sigma_hits(buf_dir):
+    """Parse .sigma_hits log into per-concept temporal data."""
+    hits_path = buf_dir / '.sigma_hits'
+    if not hits_path.exists():
+        return {}
+    temporal = {}
+    try:
+        with open(hits_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                parts = line.strip().split()
+                if len(parts) < 2:
+                    continue
+                date_str = parts[0]
+                for cid in parts[1:]:
+                    if cid.startswith('w:'):
+                        if cid not in temporal:
+                            temporal[cid] = {
+                                'ref_count': 0,
+                                'first_ref': date_str,
+                                'last_ref': date_str,
+                            }
+                        temporal[cid]['ref_count'] += 1
+                        temporal[cid]['last_ref'] = date_str
+    except OSError:
+        pass
+    return temporal
+
+
+# ---------------------------------------------------------------------------
 # Subcommand: alpha-reinforce
 # ---------------------------------------------------------------------------
 
@@ -1970,11 +2053,16 @@ def build_cw_graph(entries, concept_index):
     return cw_edges, w_to_cw, unresolved
 
 
-def compute_reinforcement(entries, concept_index, sources_data):
-    """Compute reinforcement degree and prime status for each w: entry.
+def compute_reinforcement(entries, concept_index, sources_data,
+                          temporal_data=None):
+    """Compute reinforcement degree, prime status, and temporal metrics.
+
+    TAP score components: degree (adjacency), source_diversity, is_prime,
+    plus temporal feedback from sigma_hits (ref_count, last_ref, trend).
 
     Returns:
-        reinforcement: {w_id: {'degree': int, 'source_diversity': int, 'is_prime': bool}}
+        reinforcement: {w_id: {'degree': int, 'source_diversity': int,
+                        'is_prime': bool, 'ref_count': int, ...}}
         cw_edges: resolved graph from build_cw_graph
         unresolved: list of unresolvable cw: IDs
     """
@@ -1992,11 +2080,22 @@ def compute_reinforcement(entries, concept_index, sources_data):
             other_wid = edge.get('thesis') if edge.get('athesis') == eid else edge.get('athesis')
             if other_wid and other_wid in entries:
                 linked_sources.add(entries[other_wid].get('source', ''))
-        reinforcement[eid] = {
+        rdata = {
             'degree': degree,
             'source_diversity': len(linked_sources),
             'is_prime': False,
         }
+        # Temporal augmentation (bidirectional sigma→alpha feedback)
+        if temporal_data:
+            t = temporal_data.get(eid, {})
+            rdata['ref_count'] = t.get('ref_count', 0)
+            rdata['last_ref'] = t.get('last_ref', None)
+            rdata['trend'] = t.get('trend', 'stable')
+        else:
+            rdata['ref_count'] = 0
+            rdata['last_ref'] = None
+            rdata['trend'] = 'unknown'
+        reinforcement[eid] = rdata
         if degree > 0:
             nonzero_degrees.append(degree)
     # Prime threshold: median of nonzero degrees + source diversity >= 2
@@ -2018,11 +2117,27 @@ def cmd_alpha_reinforce(args):
     if not index:
         print(json.dumps({'status': 'error', 'message': 'No alpha bin found'}))
         return
+
+    # Auto-backfill convergence_tag + origin if any entries lack them
     entries = index.get('entries', {})
+    needs_backfill = any(
+        ('origin' not in e) or (eid.startswith('cw:') and 'convergence_tag' not in e)
+        for eid, e in entries.items()
+    )
+    if needs_backfill:
+        backfill_count = backfill_convergence_tags(buf_dir, index)
+        if backfill_count > 0:
+            print(f"Backfilled {backfill_count} entries (convergence_tag + origin)",
+                  file=sys.stderr)
+
     concept_index = index.get('concept_index', {})
     sources_data = index.get('sources', {})
+
+    # Read temporal data from sigma hits (bidirectional feedback)
+    temporal_data = _read_sigma_hits(buf_dir)
+
     reinforcement, cw_edges, unresolved = compute_reinforcement(
-        entries, concept_index, sources_data)
+        entries, concept_index, sources_data, temporal_data)
     primes = [eid for eid, r in reinforcement.items() if r['is_prime']]
     max_degree = max((r['degree'] for r in reinforcement.values()), default=0)
     result_summary = {
@@ -2068,8 +2183,12 @@ def compute_clusters(cw_edges, reinforcement_data, entries):
     Returns list of cluster dicts + w_to_cluster mapping.
     """
     # Build undirected adjacency list from cw edges
+    # Wall edges are anti-edges (inhibitory) — do NOT connect
     adj = {}
     for cw_id, edge in cw_edges.items():
+        tag = entries.get(cw_id, {}).get('convergence_tag', '')
+        if tag == 'wall':
+            continue  # Wall edges inhibit — must not conflate
         t, a = edge['thesis'], edge['athesis']
         adj.setdefault(t, set()).add(a)
         adj.setdefault(a, set()).add(t)
@@ -2253,9 +2372,14 @@ def traverse_neighborhood(start_id, cw_edges, entries, reinforcement_data,
         if dist >= max_hops:
             continue
         for neighbor, cw_id in adj.get(current, []):
+            tag = entries.get(cw_id, {}).get('convergence_tag', '')
+            is_wall = (tag == 'wall')
             edges_out.append({
-                'cw': cw_id, 'from': current, 'to': neighbor, 'hop': dist + 1
+                'cw': cw_id, 'from': current, 'to': neighbor,
+                'hop': dist + 1, 'wall': is_wall
             })
+            if is_wall:
+                continue  # Wall edges are boundaries — do NOT traverse through
             if neighbor not in visited:
                 visited.add(neighbor)
                 rdata = reinforcement_data.get(neighbor, {})
@@ -2352,6 +2476,24 @@ def cmd_alpha_health(args):
     stale = [eid for eid in reinforcement
              if eid not in referenced and reinforcement[eid]['degree'] > 0]
 
+    # Wall count
+    wall_count = sum(1 for eid, e in entries.items()
+                     if eid.startswith('cw:') and e.get('convergence_tag') == 'wall')
+
+    # Polyvocal provenance
+    distill_count = sum(1 for e in entries.values() if e.get('origin') == 'distill')
+    session_count = sum(1 for e in entries.values() if e.get('origin') == 'session')
+    untagged_count = sum(1 for e in entries.values() if 'origin' not in e)
+
+    # TAP distribution
+    tap_active = [(eid, r.get('degree', 0)) for eid, r in reinforcement.items()
+                  if r.get('degree', 0) > 0]
+    zero_tap = w_count - len(tap_active)
+
+    # Temporal feedback summary
+    temporal_active = sum(1 for r in reinforcement.values()
+                          if r.get('ref_count', 0) > 0)
+
     # Output report
     lines = [
         "=" * 60,
@@ -2361,10 +2503,19 @@ def cmd_alpha_health(args):
         f"Total w: entries:  {w_count}",
         f"Total cw: entries: {cw_count}",
         f"CW graph edges:    {len(cw_edges)}",
+        f"Wall edges:        {wall_count}",
         f"Clusters:          {len(clusters)}",
         "",
         f"Bin Youn ratio:    {youn_ratio} (actual_cw / possible_pairs)",
         f"  ({cw_count} / {int(possible_pairs)})",
+        "",
+        f"Provenance:        {distill_count} distilled (diachronic), "
+        f"{session_count} session (synchronic)"
+        + (f", {untagged_count} untagged" if untagged_count else ""),
+        "",
+        f"TAP distribution:  {len(tap_active)} adjacent (finite), "
+        f"{zero_tap} unadjacent (infinite possibility)",
+        f"Temporal feedback: {temporal_active} concepts with sigma hits",
         "",
         "--- PRIMES (top 20 by reinforcement degree) ---",
     ]
@@ -2567,8 +2718,20 @@ def cmd_alpha_write(args):
             # Write .md file
             file_path.write_text(md_content, encoding='utf-8')
 
+        # Build extra index fields
+        extra = {}
+        # Origin: provenance direction (diachronic distill vs synchronic session)
+        extra['origin'] = entry.get('origin', 'distill')
+        # Convergence tag: extract [type_tag] from synthesis for cw: entries
+        if entry_type == 'convergence_web':
+            synthesis = entry.get('synthesis', '')
+            tag_match = re.match(r'\[(\w+)\]', synthesis)
+            if tag_match:
+                extra['convergence_tag'] = tag_match.group(1)
+
         # Update index
-        alpha_update_index(index, new_id, entry_type, source_folder, concept_key, filename)
+        alpha_update_index(index, new_id, entry_type, source_folder,
+                           concept_key, filename, extra_fields=extra)
 
         results.append({
             "id": new_id,
