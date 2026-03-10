@@ -48,6 +48,49 @@ For `project_map_type = none` or `pure_mode`: use `---` in mapped concepts colum
 
 **Guard**: Verify `.claude/buffer/` exists with at least `handoff.json`. If missing, skip all buffer updates and log: "Buffer update skipped: no handoff buffer found." All buffer writes are **alpha-aware**: check for `alpha/index.json` first, fall back to warm-layer writes if alpha does not exist.
 
+#### Redistillation Alpha Handling (if redistill_mode is set)
+
+**Guard**: Only run this section if the extraction step passed a `redistill_mode` value (`archive`, `update`, or `delete`). If `redistill_mode` is `null` or absent, skip to the standard alpha write below.
+
+**Step 2a: Inventory existing entries** — Scan `alpha/index.json` for all entries where `source` matches the source folder (kebab-case of source label). Collect their IDs, concept keys, and file paths.
+
+```bash
+buffer_manager.py alpha-query --buffer-dir .claude/buffer/ --source [kebab-case-source]
+```
+
+**Step 2b: Handle by mode**:
+
+**`archive` mode**:
+1. Existing alpha `.md` files are left in place (they reference the archived distillation via `_v[N]` suffix).
+2. Add `"redistill_archived": "[date]"` to each existing entry in `index.json`. These entries are still valid — they reference the older version.
+3. Proceed to standard alpha write below for the new distillation's concepts. New entries get fresh IDs.
+4. After new entries are written, scan for concept key overlaps between old and new. For each overlap, add a `"supersedes": "w:OLD"` field to the new entry and a `"superseded_by": "w:NEW"` field to the old entry. This preserves the convergence web while linking versions.
+
+**`update` mode**:
+1. For each concept in the new interpretation's Project Significance table, check if an existing alpha entry has the same concept key (case-insensitive, separator-normalized).
+2. **Match found**: Update the existing entry's `.md` file body in place. Preserve the original w: ID. Use `alpha-enrich` to replace the body content:
+   ```bash
+   echo '[{"id":"w:NNN","body":"## Definition\n...updated content..."}]' | buffer_manager.py alpha-enrich --buffer-dir .claude/buffer/
+   ```
+3. **No match** (genuinely new concept): Create via standard `alpha-write` below.
+4. **Orphaned** (old entry's concept key not in new interpretation): Add `"orphaned_by_redistill": "[date]"` to the entry in `index.json`. Do NOT delete — convergence web edges may depend on it. Log in validation_log with status `ORPHANED`.
+
+**`delete` mode**:
+1. Delete all existing alpha `.md` files for this source:
+   ```bash
+   buffer_manager.py alpha-delete --buffer-dir .claude/buffer/ --id w:NNN
+   ```
+   Repeat for each entry ID from the inventory.
+2. Scan convergence web entries (`cw:` IDs) for any that reference the deleted w: IDs in their `thesis.ref` or `athesis.ref` fields. For each dangling reference:
+   - If BOTH sides are deleted: delete the cw: entry too.
+   - If ONE side is deleted: mark the cw: entry with `"dangling": "w:NNN deleted [date]"`. Do NOT auto-delete — the surviving side may still be meaningful.
+3. Proceed to standard alpha write below for the fresh distillation.
+
+After any redistillation mode, log the action in warm `validation_log`:
+```json
+{"check": "redistill", "status": "[mode]", "detail": "Source [label]: [N] existing, [M] updated/orphaned/deleted, [K] new", "session": "[date]"}
+```
+
 #### concept_convergence type (alpha path)
 
 Draw mappings from the interpretation file's Project Significance table and Integration Points. For each concept mapping, build a JSON object with **rich body content** and pipe to `alpha-write`:

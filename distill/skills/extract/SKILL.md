@@ -44,6 +44,28 @@ If no project config exists, the parent `distill` skill handles differentiation 
 
 **ShortTitle rules**: 2-4 words from the title, CamelCase, no articles/prepositions. "A Survey of Machine Learning Methods" -> `MachineLearning`.
 
+**Step L2b: Redistillation check** -- After constructing the label, check if artifacts already exist for this source:
+
+1. Check `[distillation_dir]/[Source-Label].md`
+2. Check `[interpretations_dir]/[Source-Label].md`
+3. Check `[figures_dir]/[Source-Label]/`
+4. Check alpha bin: scan `alpha/index.json` entries where `source` matches the source folder (kebab-case of label)
+
+**If ANY exist**, this is a redistillation. **⚠ MANDATORY POPUP** via `AskUserQuestion`:
+
+- **"Archive & redistill"** — Rename existing files with `_v[N]_[date]` suffix (e.g., `Smith_Paper_2024_v1_2026-03-01.md`). Increment version counter by scanning for existing `_v[N]` suffixes. Existing alpha entries are preserved but marked `"orphaned_by_redistill"` during integration if their concepts no longer appear.
+- **"Update in place"** — Overwrite existing distillation and interpretation files. During integration, existing alpha entries are updated (same w: IDs, new body content) where concepts still match. Genuinely new concepts get new IDs. No archival.
+- **"Delete & redistill"** — Remove existing distillation, interpretation, and figure files permanently. During integration, existing alpha entries from this source are deleted (with convergence web cleanup for dangling references). Start completely fresh.
+- **"Skip — keep existing"** — Abort extraction. Do not overwrite or modify anything.
+
+**⚠ FULL STOP** — see parent skill ENFORCEMENT RULE. Your turn ends after the AskUserQuestion call.
+
+If **"Skip"** is chosen, abort extraction and report: "Existing distillation preserved. No changes made."
+
+Store the user's redistillation choice as `redistill_mode` (one of: `archive`, `update`, `delete`, `null` for first-time). Pass this to the `integrate` skill — it determines how alpha entries are handled.
+
+**If NONE exist**, this is a first-time distillation. Proceed normally (redistill_mode = null).
+
 **Step L3: User confirmation** --
 
 **⚠ MANDATORY POPUP**: You MUST use `AskUserQuestion` to confirm the source label. Do NOT proceed without user confirmation.
@@ -395,7 +417,8 @@ For **non-PDF images**: Use Read tool directly (multimodal decomposition).
   },
   "routes_used": ["A", "B"],
   "tools_used": ["pymupdf", "pdfplumber"],
-  "scan_notes": []
+  "scan_notes": [],
+  "redistill_mode": null
 }
 ```
 
