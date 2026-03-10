@@ -160,7 +160,7 @@ Create the entry in the warm handoff buffer at `convergence_web.entries[]`.
 }
 ```
 
-Type tags: `[independent_convergence]`, `[complementarity]`, `[elaboration]`, `[tension]`, `[genealogy]`.
+Type tags: `[independent_convergence]`, `[complementarity]`, `[elaboration]`, `[tension]`, `[genealogy]`, `[wall]` (anti-conflation — concepts look similar but MUST NOT be conflated; inhibitory edge).
 
 After writing entries, update hot layer `convergence_web_digest`:
 - Increment `_meta.total_entries`
@@ -175,6 +175,20 @@ buffer_manager.py alpha-validate --buffer-dir .claude/buffer/
 
 If validation fails, log the failure in Known Issues but do NOT revert writes.
 
+### Step 5b: Rebuild Relevance Grid
+
+**Guard**: Only run if alpha bin exists AND new entries were written in Steps 2/4.
+
+After writing new entries, the reinforcement scores, clusters, and relevance grid are stale. Rebuild them:
+
+```bash
+buffer_manager.py alpha-reinforce --buffer-dir .claude/buffer/
+buffer_manager.py alpha-clusters --buffer-dir .claude/buffer/
+buffer_manager.py alpha-grid-build --buffer-dir .claude/buffer/
+```
+
+These run silently (~100ms total for typical corpus). The grid rebuild ensures the sigma hook's per-message O(1) lookup reflects the newly added entries immediately. If any command fails, log it in Known Issues but continue — the sigma hook falls through to IDF scoring gracefully when the grid is absent or stale.
+
 ### Step 6: Integration Results Summary
 
 Print a **plain text** summary of all integration actions taken. This is informational — no popup or user decision needed. The pipeline proceeds to cleanup automatically.
@@ -184,6 +198,7 @@ Print a **plain text** summary of all integration actions taken. This is informa
 INDEX.md: [updated — row added for [Source-Label] | already present — no change]
 Alpha entries: [N cross_source written (IDs: w:XXX–w:YYY) | skipped — no buffer]
 Convergence web: [M entries written (IDs: cw:XXX–cw:YYY) | 0 new connections found]
+Grid rebuild: [N primes, M clusters, K grid cells | skipped — no new entries]
 MEMORY.md: [updated — N definitions added | skipped — cap exceeded | skipped — minimal mode]
 Validation: [passed | FAILED — see Known Issues]
 Known Issues: [clean run | N issues logged]

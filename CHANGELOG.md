@@ -2,6 +2,28 @@
 
 All notable changes to buffer are documented here.
 
+## [1.3.0] - 2026-03-09
+
+### Added
+- **Mesological relevance grid** — pre-computed alpha*sigma scoring replaces runtime O(n) IDF search with O(1) keyword lookup. New file `grid_builder.py` builds a relevance grid from reinforcement data + sigma orientation. Per-message cost: ~10ms.
+- **Grid gate (Gate 0c)** in sigma hook — fires before IDF scoring. If grid exists and keywords match, injects 5 precisely targeted concepts and exits. Falls through to existing IDF if no grid or no match.
+- **`alpha-reinforce`** command — computes reinforcement degree, source diversity, and prime status for all w: entries from convergence_web adjacency graph (83/117 edges resolved, 34 primes identified)
+- **`alpha-clusters`** command — BFS connected components from cw: graph (23 clusters, largest = 14 members)
+- **`alpha-neighborhood`** command — walk-weighted BFS traversal from any w:/cw: ID with configurable hop depth
+- **`alpha-health`** command — diagnostic report: Youn ratio, prime rankings, cluster density, staleness tracking
+- **`alpha-grid-build`** command — builds the relevance grid (thin wrapper delegating to `grid_builder.py`)
+- **`[wall]` convergence type** — anti-conflation marker for concepts that look similar but must not be conflated (inhibitory edge)
+- **Temporal hit tracking** — `.sigma_hits` log records which concepts the sigma hook activates; grid builder uses this for temporal relevance signatures
+- **Post-integration grid rebuild** in distill integrate skill — automatically runs `alpha-reinforce` + `alpha-clusters` + `alpha-grid-build` after new entries are written
+- **Improved concept resolution** — `_resolve_concept_to_wids` now normalizes separators (hyphens/underscores/slashes) and does substring matching as fallback, improving cw edge resolution from 55% to 71%
+- **Pluggable scoring function** — `default_scoring(degree, diversity, is_prime)` interface allows future swap to Euler product formulation without changing surrounding code
+
+### Architecture
+- Alpha bin = diachronic metathesis (structural, accumulative, res)
+- Sigma bin = synchronic metathesis (contextual, immediate, verba)
+- Relevance grid = mesological function at the interaction point
+- Net token impact: NEGATIVE (~100 tokens precise injection vs ~2000 generous dump)
+
 ## [1.2.0] - 2026-03-09
 
 ### Added

@@ -69,6 +69,27 @@ Each project's sigma trunk lives in `<repo>/.claude/buffer/`. Standalone session
 
 First-run setup offers to connect a GitHub repo. If enabled, every handoff commit is followed by `git push`. Your accumulated knowledge deserves a backup that lives somewhere safe.
 
+## Alpha bin analysis
+
+When combined with the distill plugin, the alpha bin accumulates structured knowledge (concept entries, convergence web). These commands analyze and operationalize that structure:
+
+| Command | Purpose |
+|---|---|
+| `alpha-reinforce` | Score concepts by convergence web connectivity + source diversity. Identify primes. |
+| `alpha-clusters` | BFS connected components from convergence graph. Hub detection, density metrics. |
+| `alpha-neighborhood --id w:N` | Walk-weighted traversal from a concept. Returns connected subgraph with distances. |
+| `alpha-health` | Diagnostic report: Youn ratio, prime rankings, cluster density, staleness. |
+| `alpha-grid-build` | Build pre-computed relevance grid for O(1) sigma hook lookup. |
+
+## Sigma hook + relevance grid
+
+The **sigma hook** fires on every user message (`UserPromptSubmit`). It extracts keywords and injects relevant concepts:
+
+- **Gate 0c (Grid)**: If a pre-computed relevance grid exists, keywords are matched via O(1) dictionary lookup. ~10ms, ~100 tokens injected.
+- **Fallback (IDF)**: If no grid or no match, falls through to existing IDF-weighted scoring against the alpha concept index.
+
+The grid is rebuilt by `alpha-grid-build` (runs automatically after each distillation integration).
+
 ## Compact hooks
 
 The plugin includes automatic context preservation hooks. When Claude Code compacts your conversation (to manage context length), the hooks:
@@ -106,10 +127,12 @@ buffer/
     buffer/SKILL.md             Dispatcher (routes to on/off)
     on/SKILL.md                 Rehydration skill (project selector)
     off/SKILL.md                Handoff skill (Totalize/Quicksave/Targeted)
-  hooks/hooks.json              Compact hooks (PreCompact + SessionStart)
+  hooks/hooks.json              Compact hooks + sigma hook (UserPromptSubmit)
   docs/architecture.md          Layer schemas, ID rules, consolidation protocol
   scripts/
-    buffer_manager.py           Sigma trunk operations
+    buffer_manager.py           Sigma trunk operations + alpha analysis commands
+    sigma_hook.py               Per-message context injection (gates + grid + IDF)
+    grid_builder.py             Mesological relevance grid (pre-computed alpha*sigma)
     compact_hook.py             Compaction marker + context injection
     run_python                  Cross-platform Python shim (Unix)
     run_python.bat              Cross-platform Python shim (Windows)
