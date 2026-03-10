@@ -262,6 +262,62 @@ Include:
 
 Be honest. If something confused you, say so. If a mapping felt forced, flag it. The next instance benefits more from candor than from false confidence.
 
+### Step 7b: Write session briefing
+
+Write `.claude/buffer/briefing.md` — a free-form narrative document from you to the next instance. This is the colleague-to-colleague handoff. Not JSON, not structured fields. Natural language, honest, personal.
+
+**All modes** write a briefing. Totalize writes a full briefing (15-40 lines). Quicksave/Targeted writes a shorter briefing (5-15 lines) covering at minimum: session arc and any key moments.
+
+Include:
+
+- **Session arc**: What was this session *about*? Not what was completed (that's in active_work) but what the intellectual trajectory was. How did the conversation develop? What direction did it take that wasn't planned?
+- **Key moments**: Where did understanding shift? What corrections did the user make? What debates happened and how were they resolved? What would a 10-turn argument look like compressed to 2 sentences?
+- **What surprised me**: Observations the structured data doesn't capture. Things that don't fit neatly into decision/thread/concept.
+- **User working style**: Anything revealed this session about how the user thinks, communicates, or works that helps the next instance collaborate better.
+- **What to watch for**: Tensions, unresolved confusions, things you'd want to double-check if you were continuing.
+
+If the beta bin exists (`.claude/buffer/beta/narrative.jsonl`), read it first:
+```bash
+buffer_manager.py beta-read --buffer-dir .claude/buffer/ --min-r 0.0
+```
+Use the beta entries as source material — high-relevance entries (r >= 0.6) should be reflected in the briefing's key moments. Low-relevance entries provide timeline context. The briefing should be richer than any single beta entry — it's a *synthesis* of the rolling capture plus your full session context.
+
+### Step 7c: Update dialogue trace (Totalize only)
+
+> **Mode gate**: Totalize only. Quicksave and Targeted skip this step.
+
+Compose a cold-layer `dialogue_trace` entry distilled from the briefing:
+
+```json
+{
+  "id": "c:N",
+  "session": "[brief session name, e.g. 'v1.9.0 atom markers + RH theory']",
+  "arc": "[2-3 sentence narrative arc — distilled from the briefing]",
+  "key_moments": ["[moment 1]", "[moment 2]", "[moment 3]", "[moment 4]"]
+}
+```
+
+Append to cold `dialogue_trace.sessions`. Use the next sequential `c:N` ID (check existing entries).
+
+Also: review `dialogue_trace.recurring_patterns` in the cold layer. If a new behavioral or intellectual pattern was observed this session (e.g., "User tests convergence by sharing source texts independently"), append it.
+
+### Step 7d: Promote and purge beta (if beta exists)
+
+> **Guard**: Only run if `.claude/buffer/beta/narrative.jsonl` exists.
+
+Promote high-relevance beta entries:
+```bash
+buffer_manager.py beta-promote --buffer-dir .claude/buffer/
+```
+(Reads threshold from `beta_config.threshold` in hot layer, default 0.6. Adaptive — adjusts after each run.)
+
+Then purge old/promoted entries:
+```bash
+buffer_manager.py beta-purge --buffer-dir .claude/buffer/ --max-age 3
+```
+
+**Lightweight mesh** (r >= 0.8 entries only): After promotion, scan promoted entries with r >= 0.8. For each, check if its `tags` or `text` reference a decision in `recent_decisions` (keyword match on `what` field) or an alpha concept (tag match). If match found, add/update a `narrative` field (1-2 sentences) on the target entry. This connects narrative to structure at the point of relevance. Most handoffs will have 0-2 mesh operations.
+
 ### Step 8: Write natural summary
 
 Write 2-3 plain-language sentences summarizing the session state. No encoding, no abbreviations, no codex. This should be readable by anyone.
@@ -387,8 +443,11 @@ rm -f .claude/buffer/.buffer_loaded
 
 ```bash
 git add .claude/buffer/handoff.json .claude/buffer/handoff-warm.json .claude/buffer/handoff-cold.json
+git add .claude/buffer/briefing.md
 # Include alpha changes if any referent files were added/modified
 git add .claude/buffer/alpha/
+# Include beta bin if it exists
+git add .claude/buffer/beta/ 2>/dev/null || true
 git commit -m "handoff: <brief description of session>"
 ```
 

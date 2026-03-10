@@ -2,9 +2,9 @@
 """
 Session Buffer — Buffer Manager
 
-Mechanical operations for the session buffer (sigma trunk + alpha bin).
+Mechanical operations for the session buffer (sigma trunk + alpha/beta bins).
 Handles JSON merge, ID assignment, conservation enforcement, MEMORY.md sync,
-and alpha bin queries.
+alpha bin queries, and beta bin narrative capture.
 
 Commands:
   handoff        — Full pipeline: update + migrate + sync (preferred)
@@ -19,6 +19,10 @@ Commands:
   alpha-write    — Write entries to alpha bin (stdin JSON, auto-ID, index update)
   alpha-delete   — Delete entries from alpha bin (removes files + index)
   alpha-validate — Check alpha bin integrity (index vs files on disk)
+  beta-append    — Append narrative entry to beta bin (stdin JSON)
+  beta-read      — Read beta bin entries with optional filters
+  beta-promote   — Mark entries above threshold as promoted (adaptive)
+  beta-purge     — Remove promoted + low-relevance old entries
 
 Usage: run_python buffer_manager.py <command> [options]
 """
@@ -3233,6 +3237,213 @@ def cmd_alpha_delete(args):
 
 
 # ---------------------------------------------------------------------------
+# Beta bin commands (narrative microbin)
+# ---------------------------------------------------------------------------
+
+BETA_SOFT_CAP = 100
+BETA_HARD_CAP = 200
+BETA_DEFAULT_THRESHOLD = 0.6
+BETA_THRESHOLD_MIN = 0.4
+BETA_THRESHOLD_MAX = 0.8
+
+
+def _beta_path(buf_dir):
+    """Return Path to beta/narrative.jsonl, creating beta/ dir if needed."""
+    beta_dir = Path(buf_dir) / 'beta'
+    beta_dir.mkdir(parents=True, exist_ok=True)
+    return beta_dir / 'narrative.jsonl'
+
+
+def _beta_read_entries(buf_dir):
+    """Read all beta entries from JSONL file. Returns list of dicts."""
+    p = Path(buf_dir) / 'beta' / 'narrative.jsonl'
+    if not p.is_file():
+        return []
+    entries = []
+    for line in p.read_text(encoding='utf-8').strip().split('\n'):
+        line = line.strip()
+        if line:
+            try:
+                entries.append(json.loads(line))
+            except json.JSONDecodeError:
+                pass
+    return entries
+
+
+def _beta_write_entries(buf_dir, entries):
+    """Rewrite beta JSONL file with given entries."""
+    p = _beta_path(buf_dir)
+    with open(p, 'w', encoding='utf-8') as f:
+        for e in entries:
+            f.write(json.dumps(e, ensure_ascii=False) + '\n')
+
+
+def _beta_get_threshold(buf_dir):
+    """Read promotion threshold from hot layer beta_config, default 0.6."""
+    hot_path = Path(buf_dir) / 'handoff.json'
+    if hot_path.is_file():
+        try:
+            hot = json.loads(hot_path.read_text(encoding='utf-8'))
+            return hot.get('beta_config', {}).get('threshold', BETA_DEFAULT_THRESHOLD)
+        except (json.JSONDecodeError, IOError):
+            pass
+    return BETA_DEFAULT_THRESHOLD
+
+
+def _beta_set_threshold(buf_dir, threshold):
+    """Write promotion threshold to hot layer beta_config."""
+    hot_path = Path(buf_dir) / 'handoff.json'
+    if hot_path.is_file():
+        try:
+            hot = json.loads(hot_path.read_text(encoding='utf-8'))
+            if 'beta_config' not in hot:
+                hot['beta_config'] = {}
+            hot['beta_config']['threshold'] = round(threshold, 2)
+            with open(hot_path, 'w', encoding='utf-8') as f:
+                json.dump(hot, f, indent=2, ensure_ascii=False)
+                f.write('\n')
+        except (json.JSONDecodeError, IOError):
+            pass
+
+
+def cmd_beta_append(args):
+    """Append a narrative entry to beta/narrative.jsonl."""
+    buf_dir = args.buffer_dir
+    raw = sys.stdin.read().strip()
+    if not raw:
+        print(json.dumps({"status": "error", "message": "No input on stdin"}))
+        sys.exit(1)
+    try:
+        entry = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        print(json.dumps({"status": "error", "message": f"Invalid JSON: {exc}"}))
+        sys.exit(1)
+
+    from datetime import datetime
+    entry['ts'] = datetime.now().isoformat(timespec='seconds')
+    entry.setdefault('promoted', False)
+    entry.setdefault('r', 0.2)
+    entry.setdefault('tags', [])
+    entry.setdefault('tick', 'manual')
+
+    p = _beta_path(buf_dir)
+    with open(p, 'a', encoding='utf-8') as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + '\n')
+
+    print(json.dumps({
+        "status": "ok",
+        "message": f"Appended beta entry (r={entry['r']:.2f})",
+        "ts": entry['ts']
+    }))
+
+
+def cmd_beta_read(args):
+    """Read beta entries with optional filters."""
+    entries = _beta_read_entries(args.buffer_dir)
+    min_r = getattr(args, 'min_r', 0.0) or 0.0
+    limit = getattr(args, 'limit', 0) or 0
+    since = getattr(args, 'since', None)
+
+    filtered = []
+    for e in entries:
+        if e.get('r', 0) < min_r:
+            continue
+        if since and e.get('ts', '') < since:
+            continue
+        filtered.append(e)
+
+    if limit > 0:
+        filtered = filtered[-limit:]
+
+    print(json.dumps({
+        "status": "ok",
+        "total": len(entries),
+        "filtered": len(filtered),
+        "entries": filtered
+    }, indent=2, ensure_ascii=False))
+
+
+def cmd_beta_promote(args):
+    """Mark entries above threshold as promoted. Adaptive threshold."""
+    buf_dir = args.buffer_dir
+    entries = _beta_read_entries(buf_dir)
+    threshold = _beta_get_threshold(buf_dir)
+
+    promoted = []
+    for e in entries:
+        if e.get('r', 0) >= threshold and not e.get('promoted', False):
+            e['promoted'] = True
+            promoted.append(e)
+
+    # Adaptive threshold adjustment
+    promoted_count = len(promoted)
+    new_threshold = threshold
+    if promoted_count > 10:
+        new_threshold = min(threshold + 0.05, BETA_THRESHOLD_MAX)
+    elif promoted_count == 0:
+        new_threshold = max(threshold - 0.05, BETA_THRESHOLD_MIN)
+
+    if new_threshold != threshold:
+        _beta_set_threshold(buf_dir, new_threshold)
+
+    _beta_write_entries(buf_dir, entries)
+
+    print(json.dumps({
+        "status": "ok",
+        "promoted_count": promoted_count,
+        "threshold_used": round(threshold, 2),
+        "threshold_new": round(new_threshold, 2),
+        "promoted": promoted
+    }, indent=2, ensure_ascii=False))
+
+
+def cmd_beta_purge(args):
+    """Remove promoted + low-relevance old entries."""
+    buf_dir = args.buffer_dir
+    max_age = getattr(args, 'max_age', 3) or 3
+    entries = _beta_read_entries(buf_dir)
+
+    if not entries:
+        print(json.dumps({"status": "ok", "purged": 0, "remaining": 0}))
+        return
+
+    # Compute cutoff: entries from sessions older than max_age handoffs
+    # Use date-based heuristic: if we assume ~1 session/day, max_age sessions
+    # = max_age days. More robust: count distinct dates in entries.
+    from datetime import datetime, timedelta
+    cutoff = (datetime.now() - timedelta(days=max_age)).isoformat(timespec='seconds')
+
+    surviving = []
+    purged = 0
+    for e in entries:
+        ts = e.get('ts', '')
+        is_old = ts < cutoff if ts else True
+        is_promoted = e.get('promoted', False)
+        is_low_r = e.get('r', 0) < 0.3
+
+        if is_old and (is_promoted or is_low_r):
+            purged += 1
+        else:
+            surviving.append(e)
+
+    # Hard cap enforcement
+    if len(surviving) > BETA_HARD_CAP:
+        # Sort by relevance, purge lowest
+        surviving.sort(key=lambda x: x.get('r', 0))
+        excess = len(surviving) - BETA_SOFT_CAP
+        purged += excess
+        surviving = surviving[excess:]
+
+    _beta_write_entries(buf_dir, surviving)
+
+    print(json.dumps({
+        "status": "ok",
+        "purged": purged,
+        "remaining": len(surviving)
+    }))
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -3396,6 +3607,34 @@ def main():
     p_alpha_resolve.add_argument('--auto', action='store_true',
                                   help='Auto-apply suggested concept names for ready entries')
     p_alpha_resolve.set_defaults(func=cmd_alpha_resolve)
+
+    # --- beta-append ---
+    p_beta_append = subparsers.add_parser('beta-append', parents=[buf_parent],
+        help='Append narrative entry to beta bin (stdin JSON)')
+    p_beta_append.set_defaults(func=cmd_beta_append)
+
+    # --- beta-read ---
+    p_beta_read = subparsers.add_parser('beta-read', parents=[buf_parent],
+        help='Read beta bin entries with optional filters')
+    p_beta_read.add_argument('--min-r', type=float, default=0.0,
+                              help='Minimum relevance score (default: 0.0)')
+    p_beta_read.add_argument('--limit', type=int, default=0,
+                              help='Max entries to return (0=all, default: 0)')
+    p_beta_read.add_argument('--since', default=None,
+                              help='Only entries after this ISO date (e.g., 2026-03-10)')
+    p_beta_read.set_defaults(func=cmd_beta_read)
+
+    # --- beta-promote ---
+    p_beta_promote = subparsers.add_parser('beta-promote', parents=[buf_parent],
+        help='Mark entries above threshold as promoted (adaptive threshold)')
+    p_beta_promote.set_defaults(func=cmd_beta_promote)
+
+    # --- beta-purge ---
+    p_beta_purge = subparsers.add_parser('beta-purge', parents=[buf_parent],
+        help='Remove promoted + low-relevance old entries from beta bin')
+    p_beta_purge.add_argument('--max-age', type=int, default=3,
+                               help='Max age in days for purging old entries (default: 3)')
+    p_beta_purge.set_defaults(func=cmd_beta_purge)
 
     args = parser.parse_args()
     if not args.command:

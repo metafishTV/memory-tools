@@ -2,6 +2,21 @@
 
 All notable changes to buffer are documented here.
 
+## [2.0.0] - 2026-03-10
+
+### Beta Bin + Narrative Transfer Architecture
+- **Beta bin** (β) — narrative microbin with relevance-weighted rolling capture. `beta/narrative.jsonl` (JSONL, append-only) stores 1–5 sentence narrative entries with AI-assigned relevance scores (0.0–1.0). Relevance weighting is orthogonal to hot/warm/cold's recency weighting — beta preserves significance, sigma trunk preserves recency.
+- **Relevance scoring heuristics** — user correction +0.3, convergence +0.3, user emphasis +0.3, named decision +0.2, surprise +0.2, framework touch +0.2, base 0.2. Signals additive, capped at 1.0.
+- **Adaptive promotion threshold** — starts at 0.6, auto-adjusts: >10 promotions → +0.05 (too loose), 0 promotions → -0.05 (too tight), clamped [0.4, 0.8]. Stored in hot layer `beta_config.threshold`.
+- **Session briefing** (`briefing.md`) — free-form narrative colleague-to-colleague handoff document (15–40 lines Totalize, 5–15 lines Quicksave/Targeted). Written at handoff (Step 7b), read first at `/buffer:on` (Step 2b). Narrative orients understanding before structured data provides precision.
+- **Dialogue trace revival** — cold-layer `dialogue_trace.sessions` gets new entries each Totalize handoff (Step 7c), distilled from the briefing. Restores the session-over-session narrative history that was lost during the v2 migration.
+- **Lightweight mesh** (v1) — at handoff, promoted beta entries with r >= 0.8 annotate matching decisions/alpha entries with a `narrative` field (1–2 sentences). Connects narrative to structure at the point of relevance.
+- **Autosave beta capture** — each autosave writes a 1–3 sentence narrative entry with relevance score. Skip if nothing narratively significant happened (no noise entries).
+- **Narrative-first presentation** — `/buffer:on` reads briefing → beta → structured state → concept map → alpha. The narrative answers "how did we get here?" before structure answers "what's the current state?"
+- **Beta commands** — `beta-append` (JSON on stdin), `beta-read` (filters: `--min-r`, `--limit`, `--since`), `beta-promote` (marks entries above threshold, adjusts threshold), `beta-purge` (removes promoted+old and low-r+old, `--max-age`). Soft cap 100, hard cap 200 entries.
+- **Compact hook integration** — PostCompact injection now includes session briefing (up to 20 lines) and recent high-relevance beta narrative (last 5 entries with r >= 0.5). Post-compaction recovery gets both structural state AND narrative context.
+- **Alpha/beta/sigma naming** — α = reference knowledge (static, query-on-demand), β = narrative knowledge (dynamic, relevance-weighted), σ = real-time injection (per-message hook).
+
 ## [1.9.0] - 2026-03-10
 
 ### Atom Marker Architecture — Script-Based Sectional Retrieval

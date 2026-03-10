@@ -248,6 +248,29 @@ Present the results:
 
 If there are commits or changes not recorded in the sigma trunk, flag them — the trunk may be stale.
 
+### Step 2b: Read session briefing
+
+If `.claude/buffer/briefing.md` exists, read it and present its contents. This is the previous instance's colleague-to-colleague handoff — narrative context for how the last session developed. Present it before the structured state.
+
+```
+## Briefing from previous instance
+[contents of briefing.md — presented as-is, not summarized]
+```
+
+If no `briefing.md` exists but `.claude/buffer/beta/narrative.jsonl` does, fall back to the beta bin:
+
+```bash
+buffer_manager.py beta-read --buffer-dir .claude/buffer/ --min-r 0.5 --limit 10
+```
+
+Present the high-relevance entries as a timeline narrative:
+```
+## Session narrative (from beta bin)
+[entries formatted as: timestamp — text]
+```
+
+If neither exists, continue to Step 3 without narrative context.
+
 ### Step 3: Present session state
 
 > In lite mode, present only `natural_summary` and skip the structured fields below. Full mode presents the full session state.
@@ -415,8 +438,30 @@ Update the hot layer (`handoff.json`) only:
 5. `open_threads` — update statuses (resolved, new threads)
 6. `concept_map_digest` — update if concept map changed this autosave interval
 7. `natural_summary` — one-sentence update appended: "[autosave] [brief note]"
+8. **Beta narrative entry** — Write a 1-3 sentence narrative entry to the beta bin capturing what happened since the last autosave. Assign a relevance score (0.0-1.0) based on the heuristics below. If nothing narratively significant happened, skip the beta entry (don't write noise).
 
-Write ONLY `handoff.json`. Do not touch warm or cold layers.
+   ```bash
+   echo '{"tick":"autosave","r":0.45,"text":"...","tags":["..."]}' | buffer_manager.py beta-append --buffer-dir .claude/buffer/
+   ```
+
+   **Relevance scoring heuristics** (additive, base=0.2, capped at 1.0):
+   | Signal | +Score | Example |
+   |--------|--------|---------|
+   | User correction | +0.3 | "RIP means X not Y" |
+   | Named decision | +0.2 | "Chose inline extraction over cross-plugin" |
+   | Convergence | +0.3 | "Sartre and DeLanda converge on same structure" |
+   | Surprise / unexpected | +0.2 | "RH mapping was structural, not metaphorical" |
+   | Framework touch | +0.2 | Relates to foundational concepts |
+   | User emphasis | +0.3 | User explicitly flagged importance |
+   | Routine progress | +0.0 | "Continuing implementation" |
+   | Mechanical | +0.0 | "Tests pass", "committed" |
+
+   **Examples:**
+   - Low (r=0.2): `"Tests passing after routine fix. Moving to next phase."`
+   - Medium (r=0.5): `"Decision: chose inline extraction over cross-plugin call. Avoids dependency."`
+   - High (r=0.8): `"User corrected my RIP interpretation — it's Preservation/Praxis, not Projection."`
+
+Write hot layer (`handoff.json`) and beta entry only. Do not touch warm or cold layers.
 
 **Mode-specific autosave:**
 - **Lite**: Write `session_meta`, `active_work`, `open_threads`, `recent_decisions`, `instance_notes`, `natural_summary`. Skip `concept_map_digest`.

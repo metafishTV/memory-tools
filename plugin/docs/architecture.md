@@ -27,6 +27,18 @@ All files live in `.claude/buffer/`.
 
 Content migrates downward (hot -> warm -> cold -> tower) when bounds are exceeded. `/buffer:on` reads upward selectively (hot always, warm/cold only when pointed to). The system conserves attention by never auto-loading more than ~200 lines.
 
+### Knowledge Bins: Alpha / Beta / Sigma
+
+The system uses three orthogonal knowledge channels alongside the hot/warm/cold state machine:
+
+| Bin | Purpose | Format | Weighting | Direction |
+|-----|---------|--------|-----------|-----------|
+| **Alpha** (α) | Reference knowledge — static concepts, mappings, frameworks | Individual `.md` files + `index.json` | None (persistent, no decay) | Query on demand |
+| **Beta** (β) | Narrative knowledge — rolling capture of dialogue significance | `beta/narrative.jsonl` (append-only) | Relevance (AI-assigned 0.0–1.0) | Bottom-up (promote to briefing/cold) |
+| **Sigma** (σ) | Real-time injection — per-message hook context | In-memory (compact hook) | Recency (current message only) | Injected at compaction |
+
+**Hot/warm/cold** preserves recency (oldest migrates down). **Beta** preserves significance (highest promotes up). These are complementary dimensions — together they prevent both "old but important" and "recent but routine" content from dominating.
+
 ### Alpha Bin (Reference Memory)
 
 The alpha bin separates **reference memory** (static, query-on-demand, no decay) from **working memory** (dynamic, session-facing, bounded, appropriate decay). It stores concept_map entries (cross_source, convergence_web) and framework definitions as individual files, addressable by ID via a lightweight index.
@@ -60,6 +72,79 @@ The alpha bin separates **reference memory** (static, query-on-demand, no decay)
 - **Delete**: `alpha-delete --id w:N cw:N` (removes files + all index entries; cleans up empty folders).
 
 **Backward compatibility:** Projects without `alpha/` work exactly as before. All alpha-aware code checks for alpha existence first and falls back to warm-layer operations.
+
+### Beta Bin (Narrative Memory)
+
+The beta bin captures **narrative knowledge** — the intellectual trajectory of sessions, user corrections, convergence moments, and surprises that don't fit into structured JSON fields. It uses relevance-weighted rolling capture with threshold-based promotion into permanent layers.
+
+**Structure:**
+```
+.claude/buffer/beta/
+  narrative.jsonl       # Append-only rolling narrative log (JSONL)
+```
+
+**Entry schema:**
+```json
+{
+  "ts": "2026-03-10T14:32:00",
+  "tick": "autosave|handoff|compact|manual",
+  "r": 0.72,
+  "text": "User pushed back on RIP interpretation — clarified it's Preservation/Praxis, not Projection.",
+  "tags": ["correction", "rip"],
+  "promoted": false
+}
+```
+
+- `ts`: ISO 8601 timestamp (auto-assigned at write time)
+- `tick`: What triggered the entry (autosave, handoff, compact, or manual)
+- `r`: Relevance score 0.0–1.0 (AI-assigned heuristic at write time)
+- `text`: Free-form narrative (1–5 sentences)
+- `tags`: Optional topic/concept tags for filtering
+- `promoted`: Whether this entry has been promoted to permanent layers
+
+**Relevance scoring heuristics:**
+
+| Signal | Score boost | Example |
+|--------|------------|---------|
+| User correction | +0.3 | "RIP means X not Y" |
+| Convergence / unexpected connection | +0.3 | "Sartre and DeLanda converge on same structure" |
+| User emphasis | +0.3 | User explicitly flagged importance |
+| Named decision | +0.2 | "Chose inline extraction over cross-plugin" |
+| Surprise / unexpected | +0.2 | "RH mapping to ζ was structural, not metaphorical" |
+| Framework touch | +0.2 | Relates to foundational triad, TAPS, RIP |
+| Routine progress | +0.0 | "Continuing implementation of Phase 3" |
+| Mechanical | +0.0 | "Tests pass", "committed" |
+
+Base score: 0.2. Signals are additive, capped at 1.0. Scoring is heuristic (AI judgment), not computed.
+
+**Promotion mechanism:**
+
+At handoff, entries with `r >= threshold` are marked `promoted: true`. The promotion threshold is adaptive:
+
+- Default: 0.6 (stored in hot layer `beta_config.threshold`)
+- After each promotion: if >10 entries promoted, threshold += 0.05 (too loose); if 0 promoted, threshold -= 0.05 (too tight)
+- Clamped to [0.4, 0.8]
+
+Promoted entries feed into the session briefing and dialogue trace. After promotion, purge removes `promoted + old` and `low-r + old` entries.
+
+**Size management:**
+
+- Soft cap: 100 entries. Conservation runs at each handoff via `beta-purge`.
+- Hard cap: 200 entries. If reached after purge, force-purge lowest-relevance entries.
+
+**Lightweight mesh (v1):**
+
+At handoff, promoted entries with `r >= 0.8` are scanned for references to decisions (keyword match on `what`) or alpha concepts (tag match). Matches get a `narrative` field added — 1–2 sentences connecting narrative context to the structural entry. This is additive, not overwriting.
+
+**Session briefing:**
+
+At each handoff, `briefing.md` is written as a free-form narrative colleague-to-colleague document (15–40 lines for Totalize, 5–15 for Quicksave/Targeted). The briefing synthesizes beta entries with full session context. At `/buffer:on`, the briefing is read *before* structured state — narrative orients understanding, structure provides precision.
+
+**Commands:**
+- `beta-append` — Append narrative entry (JSON on stdin)
+- `beta-read` — Read entries with optional filters (`--min-r`, `--limit`, `--since`)
+- `beta-promote` — Mark entries above threshold as promoted, adjust threshold
+- `beta-purge` — Remove promoted+old and low-r+old entries (`--max-age N`)
 
 ### Pointer-Index System
 
@@ -505,6 +590,10 @@ Buffer management is handled by the plugin's `scripts/buffer_manager.py`. Compac
 | `alpha-write` | Write new alpha entries (JSON on stdin) | `--buffer-dir`, `--dry-run`, `--id` |
 | `alpha-delete` | Remove alpha entries and files | `--buffer-dir`, `--id` |
 | `rebuild_index` | Reconstruct index.json from files on disk | `--buffer-dir` |
+| `beta-append` | Append narrative entry to beta bin (JSON on stdin) | `--buffer-dir` |
+| `beta-read` | Read beta entries with optional filters | `--buffer-dir`, `--min-r`, `--limit`, `--since` |
+| `beta-promote` | Mark entries above threshold as promoted | `--buffer-dir` |
+| `beta-purge` | Remove promoted+old and low-r+old entries | `--buffer-dir`, `--max-age` |
 
 ---
 
@@ -533,3 +622,4 @@ These sections are written fresh at each handoff:
 - `instance_notes` (hot) — personal to the outgoing instance, replaced each time
 - `natural_summary` (hot) — regenerated from current state
 - `concept_map_digest` (hot) — Full only; regenerated from current warm layer state
+- `briefing.md` — colleague-to-colleague narrative handoff, replaced each session

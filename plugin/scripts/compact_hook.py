@@ -343,6 +343,52 @@ def build_compact_summary(hot, buffer_dir, hot_max, warm_max, cold_max):
                 lines.append(f"  ? {q}")
         lines.append("")
 
+    # --- Session briefing (if exists) ---
+    briefing_path = os.path.join(buffer_dir, 'briefing.md')
+    if os.path.isfile(briefing_path):
+        try:
+            with open(briefing_path, 'r', encoding='utf-8') as f:
+                briefing_text = f.read().strip()
+            if briefing_text:
+                lines.append("## Session Briefing (from last handoff)")
+                briefing_lines = briefing_text.split('\n')
+                for bl in briefing_lines[:20]:
+                    lines.append(bl)
+                if len(briefing_lines) > 20:
+                    lines.append(
+                        f"... ({len(briefing_lines) - 20} more lines "
+                        "in .claude/buffer/briefing.md)"
+                    )
+                lines.append("")
+        except (IOError, UnicodeDecodeError):
+            pass
+
+    # --- Recent beta narrative (high-relevance) ---
+    beta_path = os.path.join(buffer_dir, 'beta', 'narrative.jsonl')
+    if os.path.isfile(beta_path):
+        try:
+            beta_entries = []
+            with open(beta_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        try:
+                            e = json.loads(line)
+                            if e.get('r', 0) >= 0.5 and not e.get('promoted'):
+                                beta_entries.append(e)
+                        except json.JSONDecodeError:
+                            pass
+            if beta_entries:
+                lines.append("## Session Narrative (high-relevance)")
+                for e in beta_entries[-5:]:
+                    tick = e.get('tick', '?')
+                    r_val = e.get('r', 0)
+                    text = e.get('text', '')
+                    lines.append(f"  [{tick}] (r={r_val:.1f}) {text}")
+                lines.append("")
+        except (IOError, UnicodeDecodeError):
+            pass
+
     # --- Natural summary ---
     ns = hot.get('natural_summary', '')
     if ns:
