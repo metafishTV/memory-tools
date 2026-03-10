@@ -9,12 +9,12 @@ Extract raw content from source documents and prepare it for analytic passes.
 
 ## Prerequisites
 
-Before starting extraction, read the project distill config at `<repo>/.claude/skills/distill/SKILL.md`. You need:
+**Context check**: The parent `distill` skill reads the project config once and holds it in conversation context. Verify these values are already loaded before re-reading the file:
 - **Output paths**: `distillation_dir`, `figures_dir`, and `raw` archive location
 - **Tooling profile**: Which specialist tools are installed, demand-install, or declined
 - **GROBID mode**: Whether scholarly paper processing is enabled
 
-If no project config exists, the parent `distill` skill handles differentiation first. If running in pure mode, paths are resolved by the parent skill before invoking extract.
+If running standalone (not invoked by the parent skill), read the project distill config at `<repo>/.claude/skills/distill/SKILL.md`. If no project config exists, the parent `distill` skill handles differentiation first.
 
 ---
 
@@ -51,12 +51,14 @@ If no project config exists, the parent `distill` skill handles differentiation 
 3. Check `[figures_dir]/[Source-Label]/`
 4. Check alpha bin: scan `alpha/index.json` entries where `source` matches the source folder (kebab-case of label)
 
-**If ANY exist**, this is a redistillation. **⚠ MANDATORY POPUP** via `AskUserQuestion`:
+**If ANY exist**, this is a redistillation. **⚠ MANDATORY POPUP** — combine redistill action AND label confirmation into a single `AskUserQuestion`:
 
-- **"Archive & redistill"** — Rename existing files with `_v[N]_[date]` suffix (e.g., `Smith_Paper_2024_v1_2026-03-01.md`). Increment version counter by scanning for existing `_v[N]` suffixes. Existing alpha entries are preserved but marked `"orphaned_by_redistill"` during integration if their concepts no longer appear.
-- **"Update in place"** — Overwrite existing distillation and interpretation files. During integration, existing alpha entries are updated (same w: IDs, new body content) where concepts still match. Genuinely new concepts get new IDs. No archival.
-- **"Delete & redistill"** — Remove existing distillation, interpretation, and figure files permanently. During integration, existing alpha entries from this source are deleted (with convergence web cleanup for dangling references). Start completely fresh.
+- **"Archive existing & redistill as '[Label]'"** — Rename existing files with `_v[N]_[date]` suffix (e.g., `Smith_Paper_2024_v1_2026-03-01.md`). Increment version counter by scanning for existing `_v[N]` suffixes. Existing alpha entries are preserved but marked `"orphaned_by_redistill"` during integration if their concepts no longer appear.
+- **"Update '[Label]' in place"** — Overwrite existing distillation and interpretation files. During integration, existing alpha entries are updated (same w: IDs, new body content) where concepts still match. Genuinely new concepts get new IDs. No archival.
+- **"Delete existing & redistill as '[Label]'"** — Remove existing distillation, interpretation, and figure files permanently. During integration, existing alpha entries from this source are deleted (with convergence web cleanup for dangling references). Start completely fresh.
 - **"Skip — keep existing"** — Abort extraction. Do not overwrite or modify anything.
+
+The label is embedded in the option text. If the user needs a different label, they select "Other" and specify both the label and their redistill preference. **This replaces Step L3 for redistills** — do NOT present a separate label confirmation popup.
 
 **⚠ FULL STOP** — see parent skill ENFORCEMENT RULE. Your turn ends after the AskUserQuestion call.
 
@@ -64,11 +66,11 @@ If **"Skip"** is chosen, abort extraction and report: "Existing distillation pre
 
 Store the user's redistillation choice as `redistill_mode` (one of: `archive`, `update`, `delete`, `null` for first-time). Pass this to the `integrate` skill — it determines how alpha entries are handled.
 
-**If NONE exist**, this is a first-time distillation. Proceed normally (redistill_mode = null).
+**If NONE exist**, this is a first-time distillation. Proceed to Step L3 (redistill_mode = null).
 
-**Step L3: User confirmation** --
+**Step L3: User confirmation** (first-time distillations only) --
 
-**⚠ MANDATORY POPUP**: You MUST use `AskUserQuestion` to confirm the source label. Do NOT proceed without user confirmation.
+**⚠ MANDATORY POPUP**: You MUST use `AskUserQuestion` to confirm the source label. Do NOT proceed without user confirmation. **Skip this step for redistills** — label was already confirmed in L2b.
 
 - If metadata found: Present via `AskUserQuestion` with options: "[Constructed label] — use this" / "I'll provide a different label". Example label: `Smith_Jones_MachineLearning_2024_Paper`.
 - If no metadata: Use `AskUserQuestion` to ask for a descriptive label (2-4 words) — e.g., `NetworkDiagram_Image`, `WhiteboardSessionMarch_Image`.
@@ -156,6 +158,53 @@ python ${CLAUDE_PLUGIN_ROOT}/scripts/distill_extract.py "<pdf_path>" --scan _dis
 
 **Modification protocol**: If a script needs edge-case adaptation, copy it to the repo, modify the copy, note in Known Issues. Never modify the bundled copy in `${CLAUDE_PLUGIN_ROOT}/scripts/`.
 
+### Phase 1.7: Tool Manifest (batch demand-install)
+
+After the scan review (and Figure Budget Gate if triggered), determine ALL specialist tools that will be needed based on scan results — do NOT discover them one-by-one during routing. This mirrors the sigma hook's pre-computation pattern: resolve dependencies upfront for O(1) routing.
+
+**Build the manifest** from scan results:
+
+| Scan result | Tool needed | Check |
+|-------------|-------------|-------|
+| `tables` non-empty | pdfplumber | `import pdfplumber` |
+| `complex_layout` non-empty | Docling | `import docling` |
+| `scanned` non-empty | OCR backend | Run `distill_ocr.py --probe` |
+| `equations` non-empty | Marker | `import marker` |
+| GROBID mode enabled | Docker + GROBID | `docker ps \| grep grobid` |
+
+**Check each needed tool's status** in the project tooling profile:
+- `installed`: proceed (no popup needed)
+- `demand-install`: add to batch install list
+- `never`: skip (use fallback route)
+
+**If batch install list is non-empty**, present a SINGLE **⚠ MANDATORY POPUP** with all needed tools:
+
+"This PDF needs specialist tools for [tables/layout/OCR/equations]. Install status:"
+- **"Install all [N] tools"** — install all demand-install tools in sequence
+- **"Let me choose"** — presents individual tool options (fall back to per-tool popups)
+- **"Skip all — use fallbacks"** — use best-effort routes for everything
+
+**⚠ FULL STOP** — see parent skill ENFORCEMENT RULE.
+
+After resolution, mark each tool as `installed` or `never` in the tooling profile. The routing phase (Phase 2) then runs with zero install interruptions.
+
+### Phase 1.8: Simple PDF Gate
+
+**Gated cascade** (mirrors sigma hook early-exit pattern): If the scan shows a simple text-only PDF, skip all specialist routing.
+
+```
+simple_pdf = ALL of:
+  scan["tables"] == []
+  scan["complex_layout"] == []
+  scan["scanned"] == []
+  scan["equations"] == []
+  scan["image_pages"] == []  OR  all image_pages already in text_pages
+```
+
+**If simple_pdf**: Use PyMuPDF text directly (Route A for all pages). Skip Phase 2 routing entirely — no specialist tools, no figure pipeline. Proceed directly to Extraction Stats Output.
+
+**If NOT simple_pdf**: Continue to Phase 2 routing below.
+
 ### Phase 2: Content-Based Routing
 
 Routes are NOT mutually exclusive -- a PDF can trigger multiple routes. Process each page with the highest-priority applicable specialist, then merge page-by-page.
@@ -210,8 +259,7 @@ The script auto-detects the best available backend and reports which was used:
 - Render pages as images via `page.get_pixmap(dpi=200)` and read via Claude vision.
 - **Batch in chunks of 5 pages** (not one-by-one). Print progress: "OCR via vision: pages 1-5 of [N]..."
 - After each batch: if pages are purely decorative (blank, dividers, repetitive headers), note and skip similar pages in remaining batches.
-- **For fully_scanned PDFs with > 20 scanned pages**: the Figure Budget Gate (Phase 1.5) MUST fire first. Do NOT begin 20+ vision calls without user consent.
-- Budget gate options for vision OCR: "Process all [N] pages" / "Sample every [M]th page" / "I'll specify pages" / "Skip -- I'll provide text manually".
+- **For fully_scanned PDFs with > 20 scanned pages**: the Figure Budget Gate (Phase 1.5) has ALREADY fired — use the user's choice from that gate. Do NOT present a second budget popup. If Phase 1.5 chose "OCR text only," this vision fallback path should not be reached. If Phase 1.5 chose sampling, apply the same sampling indices here.
 
 **Route E -- Equations** (`scan["equations"]` non-empty)
 1. If Marker installed -> use Marker (converts to Markdown with LaTeX).
@@ -381,9 +429,9 @@ Read EVERY extracted PNG via multimodal Read tool. Check for full-page indicator
 
 ### Post-Extraction Steps
 
-1. **Decompose**: Read each cropped image. Extract caption, axes, data relationships, structure, legend.
+1. **Decompose**: Read cropped images in **parallel batches of 5-10** (not one-by-one). For each, extract caption, axes, data relationships, structure, legend. Use multiple Read tool calls in a single turn for each batch.
 2. **Describe**: Write image reference + textual description in Figures section.
-3. **Cross-reference**: Map to Key Concepts.
+3. **Concept mapping**: For each figure, note which Key Concepts it illustrates or extends and how (this replaces a separate cross-reference section — each figure is self-contained).
 4. **Flag failures**: Note unparseable figures for user review.
 5. **Equation figures**: Render at dpi=200, note vision-extraction caveat.
 

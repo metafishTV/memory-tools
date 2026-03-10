@@ -2,6 +2,22 @@
 
 All notable changes to buffer are documented here.
 
+## [1.6.0] - 2026-03-09
+
+### Performance
+- **Merged redistill + label popups** — redistillations now confirm both the action (archive/update/delete) AND the source label in a single popup instead of two sequential FULL STOP gates. First-time distillations unchanged.
+- **Tool manifest (Phase 1.7)** — after PDF scan, determines ALL specialist tools needed upfront and batches demand-install offers into a single popup. Eliminates per-route install interruptions.
+- **Simple PDF gate (Phase 1.8)** — gated cascade pattern (from sigma hook) skips all specialist routing for text-only PDFs. If scan shows no tables/layout/scans/equations/images, goes straight to PyMuPDF text. Zero specialist overhead.
+- **Parallel figure decomposition** — cropped images now read in batches of 5-10 via parallel Read calls instead of one-by-one. 3-5x speedup for figure-heavy documents.
+- **Unified vision OCR gating** — Route D's redundant budget gate for fully_scanned PDFs removed. Phase 1.5 Figure Budget Gate decision now propagates to all downstream routes (single decision point).
+- **Pure_mode interpretation skip** — pure_mode distillations skip the interpretation review popup entirely (no interpretation file to review).
+- **Context passing** — parent distill skill reads project config once and holds it in conversation context. Sub-skills verify loaded context rather than re-reading the file, eliminating 2 redundant file reads per distillation.
+
+### Architecture
+- **Dynamic concept scaling** — Key Concepts table depth scales with source length: 5-8 concepts for short sources (<20pp), 8-15 for medium (20-100pp), 15-25 for long (100+pp). Mirrors sigma hook's dynamic scalar pattern.
+- **Robust template merging** — Figure↔Concept Contrast folded into Figures section (each figure now self-contained with concept mappings). Empirical Data folded into Theoretical & Methodological Implications as a conditional subsection with expanded guidance. Both merged sections are more substantive, not thinner.
+- **Buffer→distill structural alignment** — three buffer patterns ported to distill: gated cascade (Phase 1.8), pre-computation (Phase 1.7 tool manifest), dynamic scalars (concept scaling)
+
 ## [1.5.0] - 2026-03-09
 
 ### Added

@@ -9,9 +9,9 @@ This skill runs the analytic core of the distillation pipeline. It assumes the `
 
 ## Prerequisites
 
-Before running any analytic pass, load the project's distill configuration:
+Before running any analytic pass, verify the project configuration is loaded:
 
-1. **Read project config** — locate and read the project's distill config at `<repo>/.claude/skills/distill/SKILL.md` (set during differentiation). Extract:
+1. **Context check** — the parent `distill` skill reads the project config once. Verify these values are already in conversation context before re-reading the file:
    - `project_name` — used in interpretation file headers
    - `project_map_type` — one of `concept_convergence`, `thematic`, `narrative`, `custom`, `none`
    - `pure_mode` — boolean; if `true`, skip Pass 4 and interpretation file entirely
@@ -19,6 +19,8 @@ Before running any analytic pass, load the project's distill configuration:
    - `interpretations_dir` — where interpretation files are written
    - `distillation_dir` — where distillation files are written
    - `custom_schema` — (only if `project_map_type = custom`) the user-defined interpretation template
+
+   If running standalone (not invoked by the parent skill), read the project config at `<repo>/.claude/skills/distill/SKILL.md`.
 
 2. **Verify extraction artifacts** — confirm that raw text exists at `[distillation_dir]/raw/[Source-Label].txt`. If missing, abort with a clear message directing the user to run `extract` first.
 
@@ -72,7 +74,11 @@ Produce the distillation in this exact structure. Mandatory sections ALWAYS appe
 |---------|-----------|--------------|------------|
 | [term]  | [precise definition as used in this source] | [what structural work this concept performs in the argument — what it blocks, enables, replaces, or transforms; why the author needs it at this juncture] | [location in source — see Source Citation Rules] |
 
-[All essential concepts, typically 5-15 entries, using source's own terminology. The Significance column captures operational function, not just importance — what each concept *does* in the text's architecture. The Source Ref column grounds every concept in a specific location in the original, enabling traceability without re-reading the full source.]
+[Scale concept depth dynamically with source length — this mirrors the sigma hook's dynamic scalar pattern:
+- **Short sources** (< 20 pages / < 5k words): 5-8 concepts — tighter focus, each concept gets more operational depth
+- **Medium sources** (20-100 pages / 5k-30k words): 8-15 concepts — standard depth
+- **Long sources** (100+ pages / 30k+ words): 15-25 concepts — broader coverage, significance column can be more concise per entry
+Use the source's own terminology. The Significance column captures operational function, not just importance — what each concept *does* in the text's architecture. The Source Ref column grounds every concept in a specific location in the original, enabling traceability without re-reading the full source.]
 
 ## Figures, Tables & Maps                     ← CONDITIONAL: only if visual material exists
 
@@ -81,17 +87,12 @@ Produce the distillation in this exact structure. Mandatory sections ALWAYS appe
 
 ![Figure N](figures/[Source-Label]/fig_NN_pP.png)
 
-- **What it shows**: [textual decomposition of visual content]
-- **Key data points**: [specific values, relationships, patterns visible]
-- **Connection to argument**: [how this visual supports the core argument]
+- **What it shows**: [textual decomposition of visual content — describe ALL visible elements: axes, labels, data series, regions, annotations, legends]
+- **Key data points**: [specific values, relationships, patterns, trends, outliers visible in the figure]
+- **Connection to argument**: [how this visual supports or advances the core argument — what claim does it evidence?]
+- **Concept mappings**: [which Key Concepts this figure illustrates, extends, or provides evidence for. For each: state the concept AND how the figure relates to it. E.g., "Demonstrates [Concept A] by showing [specific relationship]; extends [Concept B] via [mechanism visible in the data]." This makes each figure entry self-contained — no separate cross-reference section needed.]
 
-Note: The image reference embeds the rendered page for visual inspection by future sessions. The text decomposition provides searchable content and alt-text. Both required — image alone loses searchability; text alone loses spatial/visual information.
-
-## Figure ↔ Concept Contrast                  ← CONDITIONAL: only if Figures section exists
-
-[For each figure, map which Key Concepts it illustrates or extends. Format:]
-- Figure N → [Concept A]: [how the figure demonstrates/extends this concept]
-- Figure N → [Concept B]: [relationship]
+Note: The image reference embeds the rendered page for visual inspection by future sessions. The text decomposition provides searchable content and alt-text. Both required — image alone loses searchability; text alone loses spatial/visual information. The concept mappings ground each figure in the source's conceptual architecture — a figure without concept anchors is an orphan artifact.
 
 ## Equations & Formal Models                  ← CONDITIONAL: only if mathematical content exists
 
@@ -108,9 +109,9 @@ $$[equation in LaTeX] \tag{N}$$
 
 [What method does this source employ — dialectical, phenomenological, formal-mathematical, empirical-statistical, case-study, simulation, mixed? What are the methodological implications of the argument? What does the method assume, and what does it preclude? Every source has a method, even when unstated. **Include inline source citations** for methodological claims — see Source Citation Rules.]
 
-## Empirical Data                              ← CONDITIONAL: only if source is experimental/quantitative
+### Empirical Grounding                        ← CONDITIONAL subsection: only if source is experimental/quantitative
 
-[Data sources, sample sizes, methods, key findings with numbers. Separate from the theoretical-methodological section because not all sources produce data, but all sources have methodological commitments.]
+[Data sources, sample sizes, methods, key findings with numbers. This subsection grounds the methodological discussion in concrete evidence: what data the method actually produced, how it was gathered, and what the numbers show. Without this, the methodological claims above remain abstract — with it, they are evidenced. Include: data sources and provenance, sample characteristics (N, selection criteria, representativeness), measurement instruments and their validity, key quantitative findings with effect sizes and confidence, limitations the data imposes on the claims.]
 ```
 
 **Figure storage convention**: Rendered figures saved in `[distillation_dir]/figures/[Source-Label]/`. File naming by source type:
@@ -296,6 +297,8 @@ The interpretation file template varies by project map type:
 ### Template: custom
 
 Use the custom schema defined during differentiation (loaded from `custom_schema` in the project config). The interpretation file should follow whatever structure the user specified, adapted from the components above.
+
+**Guard**: If `pure_mode = true`, no interpretation file was written — skip the review below entirely and proceed directly to Analysis Stats Output.
 
 **⚠ MANDATORY REVIEW**: After writing the interpretation file, present a **plain text summary** to the user:
 - Number of concepts mapped and their relationship types (confirms/extends/challenges/novel)

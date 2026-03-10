@@ -29,9 +29,16 @@ Distill a source document into structured reference knowledge.
    - Invoke the `distill:differentiate` skill to run one-time setup.
    - After differentiation completes, continue to step 3.
 
-3. **Read the project config**: `.claude/skills/distill/SKILL.md` — this has the project-specific terminology, output paths, and tooling profile.
+3. **Read the project config ONCE**: `.claude/skills/distill/SKILL.md` — this has the project-specific terminology, output paths, and tooling profile. Extract and hold in working context:
+   - `project_name`, `project_map_type`, `pure_mode`
+   - `distillation_dir`, `figures_dir`, `interpretations_dir`
+   - `terminology_glossary` (for Pass 4 mappings)
+   - `tooling_profile` (installed/demand-install/never per tool)
+   - `memory_config`, `custom_schema` (if applicable)
 
-4. **Run the pipeline** in sequence:
+   **Context passing**: Each sub-skill's "Read project config" step becomes a **verification check** — confirm the config values are already loaded in the conversation context from this step, rather than re-reading the file. The parent skill reads once; the sub-skills use the loaded context. This eliminates 2 redundant file reads per distillation (~15-20% of total file I/O).
+
+4. **Run the pipeline** in sequence, passing config context forward:
    a. Invoke `distill:extract` — extracts raw content from the source document
    b. Invoke `distill:analyze` — runs analytic passes and produces the distilled output
    c. Invoke `distill:integrate` — updates project indexes, buffer, and reference bin
