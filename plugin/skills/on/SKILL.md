@@ -36,22 +36,12 @@ needed to orient.
 - `read --buffer-dir .claude/buffer/` — Parse hot layer, resolve warm pointers (tombstones, redirects), output formatted reconstruction. Covers Steps 1, 3, 4. Add `--warm-max N` for project overrides.
 - `validate --buffer-dir .claude/buffer/` — Check layer sizes, schema version, required fields, alpha integrity.
 - `next-id --buffer-dir .claude/buffer/ --layer warm` — Get next sequential ID (scans alpha too to prevent collisions).
-- `alpha-read --buffer-dir .claude/buffer/` — Read alpha bin index, output summary. For Step 1b.
-- `alpha-query --buffer-dir .claude/buffer/ --id w:218` — Retrieve specific referent by ID. For Step 4 pointer resolution.
-- `alpha-query --buffer-dir .claude/buffer/ --source Sartre` — List all entries from a source.
-- `alpha-query --buffer-dir .claude/buffer/ --concept totalization` — Search by concept name.
-- `alpha-validate --buffer-dir .claude/buffer/` — Check alpha bin integrity (index vs files on disk).
-- `alpha-write --buffer-dir .claude/buffer/` — Write new alpha entries (JSON on stdin → `.md` files + `index.json` update). Used by `/distill` and `/buffer:off`.
-- `alpha-delete --buffer-dir .claude/buffer/ --id w:N cw:N` — Remove alpha entries (files + index cleanup). Used by `/buffer:off` consolidation.
-- `alpha-reinforce --buffer-dir .claude/buffer/` — Compute reinforcement scores + cw_graph from convergence_web adjacency. Writes to index.json.
-- `alpha-clusters --buffer-dir .claude/buffer/` — Compute cluster analysis from cw_graph (requires `alpha-reinforce` first).
-- `alpha-neighborhood --buffer-dir .claude/buffer/ --id w:N [--hops 2]` — Traverse convergence_web neighborhood from a given ID.
-- `alpha-health --buffer-dir .claude/buffer/` — Generate alpha bin health report (Youn ratio, primes, clusters, staleness).
-- `alpha-grid-build --buffer-dir .claude/buffer/` — Build mesological relevance grid (pre-computed alpha*sigma scores for O(1) lookup).
+- `beta-read --buffer-dir .claude/buffer/` — Read beta bin entries with optional filters (`--min-r`, `--limit`, `--since`).
+- `beta-append --buffer-dir .claude/buffer/` — Append narrative entry to beta bin (JSON on stdin).
 
-**Convergence types**: `[convergence]` (default), `[divergence]`, `[tension]`, `[wall]` (anti-conflation — marks concepts that look similar but MUST NOT be conflated; acts as an inhibitory edge that breaks conceptual feedback loops).
+> **Full + Alpha mode**: If `buffer_mode` is `"full"` AND `alpha/` exists, also read `skills/on/full-ref.md` for alpha tooling, pointer following (Step 4), and full-scan protocol (Step 5). Those steps are factored out to keep this file lean for standard sessions.
 
-**Manual steps**: git grounding (2), full-scan check (5), instance notes presentation (6), MEMORY.md (7), autosave arming (8).
+**Manual steps**: git grounding (2), instance notes presentation (6), MEMORY.md (7), autosave arming (8).
 
 ---
 
@@ -172,7 +162,7 @@ After registering the project, configure how MEMORY.md and the sigma trunk coexi
 4. **If full integration**:
    - Read MEMORY.md completely
    - **Keep in MEMORY.md**: project location, architecture, key parameters, user preferences, completed stages (compress to one line per stage)
-   - **Migrate to sigma trunk**: theoretical concept definitions to warm `concept_map` entries (new `w:N` IDs), philosophical reference summaries to `concept_map` cross_source entries, forward note details to `open_threads` or warm entries with `ref` fields, current status/next action to `active_work` (already in hot)
+   - **Migrate to sigma trunk**: current status/next action to `active_work` (already in hot), forward note details to `open_threads` or warm entries with `ref` fields. In Full mode with alpha, also migrate theoretical concept definitions — see `full-ref.md` for concept map migration details.
    - Rewrite MEMORY.md in orientation card format:
      - Keep sections listed above
      - Add `## Status` one-liner: `**Status**: [current_phase]. Next: [next_action].`
@@ -182,7 +172,6 @@ After registering the project, configure how MEMORY.md and the sigma trunk coexi
        `.claude/buffer/`. Run `/buffer:on` for full working context. This file is the
        orientation card — enough for standalone sessions, no duplication with the trunk.
        ```
-   - Update `concept_map_digest` in hot to reflect any migrated entries
 
 5. **If no integration**: skip.
 
@@ -200,32 +189,9 @@ Read `.claude/buffer/handoff.json` (~200 lines). This is the only mandatory read
 
 - If `schema_version` is missing or < 2, inform the user: "Found v1 sigma trunk. Run `/buffer:off` first to migrate to v2 format."
 
-### Step 1b: Alpha bin detection
+### Step 1b: Alpha bin detection (Full + Alpha only)
 
-> **Mode gate: Full only.** Lite mode has no reference memory — skip.
->
-> **Alpha gate:** Check if `alpha/` directory exists in the buffer: `ls .claude/buffer/alpha/index.json 2>/dev/null`. If alpha bin does NOT exist — skip this step silently, proceed to Step 2.
-
-Check for alpha bin (reference memory separated from working memory):
-
-```bash
-scripts/buffer_manager.py alpha-read --buffer-dir .claude/buffer/
-```
-
-**If alpha exists**, present a one-line summary:
-```
-Alpha: N referents across M sources (fw: X, cs: Y, cw: Z)
-```
-
-Do **not** load any alpha content yet — individual referents are loaded on-demand via
-pointer resolution (Step 4) or explicit `alpha-query`. The index is lightweight metadata
-only.
-
-**If alpha does not exist** and warm layer is over its cap, note:
-```
-Note: Warm layer is over cap. Consider running the alpha migration to separate
-reference memory from session state.
-```
+> If `buffer_mode` is `"full"` AND `alpha/index.json` exists: read `full-ref.md` and run the alpha detection protocol there. Otherwise skip to Step 2.
 
 ### Step 2: Git grounding
 
@@ -273,8 +239,6 @@ If neither exists, continue to Step 3 without narrative context.
 
 ### Step 3: Present session state
 
-> In lite mode, present only `natural_summary` and skip the structured fields below. Full mode presents the full session state.
-
 From the hot layer only:
 
 ```
@@ -289,75 +253,9 @@ From the hot layer only:
 [natural_summary text]
 ```
 
-### Step 4: Follow flagged pointers
+### Step 4-5: Pointer following + Full-scan (Full + Alpha only)
 
-> **Mode gate: Full only.** Lite mode has no concept map — skip this step.
-
-Selective loading from warm/cold layers using the pointer-index system:
-
-**For each entry in `concept_map_digest.flagged` and `concept_map_digest.recent_changes`:**
-
-1. Collect all referenced IDs from `"see"` arrays (these will be `w:N` or `cw:N` IDs)
-2. **If alpha bin exists**, check alpha index first — run `alpha-query --id [id]` to retrieve from alpha bin. Most `w:N` and `cw:N` IDs live in alpha after migration.
-3. **Fall back to warm** — if not in alpha, read `handoff-warm.json` and extract matching entries
-4. If a warm entry has `"see_also"` references, read `handoff-cold.json` and extract those entries
-5. **Max cascade depth: 3** (hot -> alpha/warm -> cold, then stop)
-6. **Visited set**: track all followed IDs to prevent circular references
-7. **Broken ref**: if an ID is not found in any layer or alpha, log `"Broken reference: [id] not found"` and continue
-8. **Tombstone**: if an entry has `"archived_to"`, note: `"[id] was archived to [tower file]. Ask user if retrieval is needed."`
-9. **Redirect tombstone**: if an entry has `"migrated_to"`, follow the redirect to the indicated layer and load the target entry
-
-**For each `open_thread` with `"see"` pointers:**
-- Follow into warm layer, present relevant context
-
-Present flagged/changed concepts:
-```
-## Concept Map Changes
-- [NEW] [summary] (see w:N)
-- [CHANGED] [summary] (see w:N)
-- [NEEDS_USER_INPUT] [summary] (see w:N)
-```
-
-### Step 5: Check full-scan threshold
-
-> **Mode gate: Full only.** Lite mode skips this step.
-
-If `sessions_since_full_scan >= full_scan_threshold`:
-
-**⚠ MANDATORY POPUP**: You MUST present this choice via `AskUserQuestion`. Do NOT auto-skip. Do NOT decide for the user.
-
-Options:
-- **Full scan** — "It's been [N] sessions since a full sigma trunk scan (threshold: [T]). Run a complete review of warm + cold layers now."
-- **Skip** — "Continue with selective loading. I'll ask again next session."
-
-Wait for the user's response before continuing.
-
-- If Full scan: read all layers, surface stale/orphaned entries, reset `sessions_since_full_scan` to 0 in the hot layer
-- If Skip: continue with selective loading
-
-**Promotion check** (only during full scan, only if `memory_config.integration` is `"full"`):
-
-After the full scan completes, identify warm-layer entries that:
-1. Have not changed in the last `full_scan_threshold` sessions (stable)
-2. Were pointer-loaded in 3+ consecutive sessions (frequently referenced)
-
-**⚠ MANDATORY POPUP**: If any qualify, you MUST present them to the user via `AskUserQuestion`. Do NOT auto-promote. Do NOT skip this step.
-
-Options:
-- **Promote** — "These sigma trunk entries are stable and loaded nearly every session. Promoting them to MEMORY.md makes them available without /buffer:on: [list concepts with unchanged N sessions, loaded M times]. Max 10 lines per cycle."
-- **Decline** — "Skip promotion this session."
-
-Wait for the user's response before continuing.
-
-If approved:
-- Add/update a `## Stable Definitions` section in MEMORY.md (before `## Sigma Trunk Integration`)
-- Each promoted entry: one-line definition
-- Cap: 10 lines promoted per cycle
-- The warm entry remains the source of truth — MEMORY.md gets a read-only copy
-- Mark warm entry: `"promoted_to_memory": "YYYY-MM-DD"`
-- `/buffer:off`'s MEMORY.md sync step keeps promoted copies current
-
-If declined or no candidates: continue.
+> If `buffer_mode` is `"full"` AND `alpha/index.json` exists: read `full-ref.md` and run Steps 4 and 5 from there. Otherwise skip to Step 6.
 
 ### Step 6: Surface instance notes
 
@@ -436,7 +334,7 @@ Update the hot layer (`handoff.json`) only:
 3. `active_work` — current phase, completed items, in-progress, next action
 4. `recent_decisions` — append new decisions since last autosave
 5. `open_threads` — update statuses (resolved, new threads)
-6. `concept_map_digest` — update if concept map changed this autosave interval
+6. `concept_map_digest` — Full mode only: update if concept map changed this autosave interval
 7. `natural_summary` — one-sentence update appended: "[autosave] [brief note]"
 8. **Beta narrative entry** — Write a 1-3 sentence narrative entry to the beta bin capturing what happened since the last autosave. Assign a relevance score (0.0-1.0) based on the heuristics below. If nothing narratively significant happened, skip the beta entry (don't write noise).
 
@@ -465,7 +363,7 @@ Write hot layer (`handoff.json`) and beta entry only. Do not touch warm or cold 
 
 **Mode-specific autosave:**
 - **Lite**: Write `session_meta`, `active_work`, `open_threads`, `recent_decisions`, `instance_notes`, `natural_summary`. Skip `concept_map_digest`.
-- **Full**: All fields including `concept_map_digest`.
+- **Full**: All fields including `concept_map_digest`. See `full-ref.md` for concept map autosave details.
 
 ### What to skip (reserved for full /buffer:off)
 

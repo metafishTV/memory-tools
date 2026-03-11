@@ -2,6 +2,13 @@
 
 All notable changes to buffer are documented here.
 
+## [2.1.0] - 2026-03-10
+
+### Instruction Weight Reduction + Lite Mode Fix
+- **SKILL.md split** — Full+alpha content (concept map validation, consolidation, pointer following, full-scan protocol, grid rebuild, resolution check, tower archival) extracted into companion `full-ref.md` files. Core SKILL.md files are self-contained for Lite mode and standard Full sessions. Full+alpha instances get a directive to also read `full-ref.md`. on/SKILL.md: 547→444 lines (19% reduction). off/SKILL.md: 532→395 lines (26% reduction).
+- **Steps 3-5 Lite mode fix** — "Summarize active work", "Log decisions", and "List open threads" were incorrectly gated as Full-only in `/buffer:off`, despite the Lite schema including `active_work`, `recent_decisions`, and `open_threads`. A Lite Totalize handoff would not refresh these fields. Now available in all modes; Lite omits `see` pointer arrays (no concept map cross-references).
+- **Beta/sigma confirmed mode-agnostic** — beta bin, briefing, sigma hook, and dialogue trace are correctly available in both Lite and Full modes without distill. Only alpha bin requires the distill plugin (gated by directory existence, not by mode).
+
 ## [2.0.0] - 2026-03-10
 
 ### Beta Bin + Narrative Transfer Architecture

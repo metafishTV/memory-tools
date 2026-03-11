@@ -31,9 +31,9 @@ the handoff — if it matters, it's in the alpha stash or it's gone.
 
 **Primary**: `handoff --buffer-dir DIR --input changes.json --warm-max N --memory-path PATH --project-name NAME` — Chains update + migrate + sync in one call. Preferred workflow.
 
-**Alpha bin**: `alpha-read`, `alpha-query --id/--source/--concept`, `alpha-validate` — reference memory queries. Use `next-id --layer warm` to get the next w:N ID (scans alpha to prevent collisions).
-
 **Standalone** (debugging only): `update`, `migrate`, `validate`, `sync`, `next-id` — see script `--help`.
+
+> **Full + Alpha mode**: If `buffer_mode` is `"full"` AND `alpha/` exists, also read `skills/off/full-ref.md` for alpha tooling, concept map validation (Step 6), consolidation (Step 6b), MEMORY.md sync (Step 11), grid rebuild (Step 14b), and resolution check (Step 14c).
 
 ### Workflow (target: ~5 tool calls after cognitive steps)
 
@@ -54,9 +54,9 @@ The alpha stash — crystallized session learnings ready for merge. Omit section
   "open_threads": [ { "thread", "status", "ref?" } ],
   "instance_notes": { "from", "to", "remarks": [], "open_questions": [] },
   "natural_summary": "2-3 plain-language sentences.",
-  "concept_map_changes": [ { "action": "add|update|flag|promote", ... } ],
-  "convergence_web_changes": [ { "action": "add|update", ... } ],
-  "validation_log_entries": [ { "check", "status", "detail", "session" } ]
+  "concept_map_changes": [ "..." ],   // Full + Alpha only — see full-ref.md
+  "convergence_web_changes": [ "..." ], // Full + Alpha only — see full-ref.md
+  "validation_log_entries": [ "..." ]   // Full + Alpha only — see full-ref.md
 }
 ```
 
@@ -151,8 +151,6 @@ Collect via git commands:
 
 ### Step 3: Summarize active work
 
-> **Mode gate**: Lite mode skips this step.
-
 Infer from the conversation (do NOT ask the user):
 
 - What phase/stage is the project in?
@@ -163,92 +161,28 @@ Infer from the conversation (do NOT ask the user):
 
 ### Step 4: Log decisions
 
-> **Mode gate**: Lite mode skips this step.
-
 Review the conversation for decisions made this session. Write each to `recent_decisions` in the hot layer. For each decision:
 
 - `what`: What was decided
 - `chose`: What was chosen
 - `why`: Brief rationale
 - `session`: Today's date
-- `see`: Array of warm-layer IDs if the decision relates to existing warm entries
+- `see`: Array of warm-layer IDs if the decision relates to existing warm entries (Full mode only — Lite mode omits `see`)
 
 If a decision relates to an existing warm entry, include the pointer. If not, `"see": []` is fine.
 
 ### Step 5: List open threads
-
-> **Mode gate**: Lite mode skips this step.
 
 Identify unresolved questions, deferred items, and next steps. Write each to `open_threads` in the hot layer. For each:
 
 - `thread`: Description
 - `status`: `noted` | `deferred` | `blocked` | `needs-user-input`
 - `ref`: Reference (file, doc section, etc.) if applicable
-- `see`: Array of warm-layer IDs for related context
+- `see`: Array of warm-layer IDs for related context (Full mode only — Lite mode omits `see`)
 
-### Step 6: Validate concept map
+### Step 6 + 6b: Concept Map + Consolidation (Full + Alpha only)
 
-> **Mode gate**: Full only. Lite mode skips this step (no concept map).
->
-> **Alpha gate:** Check if `alpha/` directory exists: `ls .claude/buffer/alpha/index.json 2>/dev/null`. If alpha bin does NOT exist — skip Steps 6 and 6b entirely. Concept map operations are deferred until the distill plugin provisions the alpha bin.
-
-**Alpha-aware**: After migration, concept_map entries (cross_source, convergence_web, framework) live in the **alpha bin** (`alpha/` directory), not the warm layer. The warm layer retains only `decisions_archive` and `validation_log`.
-
-1. Run `alpha-read --buffer-dir .claude/buffer/` to get the index summary
-2. For each decision from Step 4, check if it touches a concept mapping:
-   - If a mapping **changed**: update the alpha referent file directly, add to hot `concept_map_digest.recent_changes` with status `CHANGED`
-   - If a **new concept** was introduced: use `alpha-write` to create it:
-     ```bash
-     echo '{"type":"cross_source","source_folder":"[kebab-case-source]","key":"Source:ConceptName","maps_to":"[mapping]","ref":"","suggest":null}' | scripts/buffer_manager.py alpha-write --buffer-dir .claude/buffer/
-     ```
-     Read the output JSON to get the assigned ID. Add to digest as `NEW`.
-   - If a **suggestion was confirmed** by the user: update the referent file's `suggest` to `equiv`, log as `PROMOTED`
-   - If a **foundational concept** was questioned: log as `NEEDS_USER_INPUT`, do NOT auto-change
-
-3. Update `concept_map_digest._meta.total_entries` and `last_validated`
-4. If alpha doesn't exist (pre-migration project), fall back to warm-layer concept_map operations
-
-**IMPORTANT**: `suggest: null` is the PREFERRED state. Do NOT feel pressure to populate suggest fields. Only flag genuine structural parallels noticed during the session. The user must confirm any suggestion before it becomes an equiv.
-
-### Step 6b: Consolidation
-
-> **Mode gate**: Full only. Lite mode skips this step.
->
-> **Alpha gate:** If alpha bin does NOT exist — skip this step entirely.
-
-**Alpha-aware**: With reference memory in the alpha bin, consolidation operates differently:
-
-**Warm layer consolidation** (decisions_archive + validation_log):
-- Warm is now small (~274 lines). Consolidation means compressing verbose decision/validation entries using established vocabulary.
-- Log all changes in `validation_log` with status `CONSOLIDATED`.
-
-**Alpha referent consolidation** (individual .md files):
-For alpha entries the current instance **created or meaningfully modified this session**:
-
-- **Vocabulary compression**: Replace multi-word descriptions with established terms
-- **Same-concept merge**: If two referent files describe the same structural relationship, merge into one file and delete the absorbed entry via `alpha-delete`:
-     ```bash
-     scripts/buffer_manager.py alpha-delete --buffer-dir .claude/buffer/ --id w:218
-     ```
-     Then update the surviving entry's `.md` file with merged content.
-- **Description tightening**: Shorten explanatory prose to referential shorthand
-
-Alpha files are self-contained and small (30-80 lines each), making targeted consolidation natural — edit a single file, update the index. No need to parse/rewrite large JSON arrays.
-
-**Periodic deep consolidation** (at `full_scan_threshold`):
-
-When `sessions_since_full_scan >= full_scan_threshold`, scan alpha index for:
-1. Self-integrated entries -> apply deeper consolidation with confidence (automated)
-2. Inherited entries -> identify candidates, **⚠ MANDATORY POPUP**: present proposals via `AskUserQuestion`, wait for the user's response — do NOT auto-approve
-3. Apply ONLY the changes the user explicitly approved
-4. Reset `sessions_since_full_scan` to 0
-
-**Rules (all consolidation):**
-- Never consolidate across source folders (folder boundaries are structural)
-- Never auto-consolidate framework entries without `NEEDS_USER_INPUT`
-- All consolidations logged in warm `validation_log` with status `CONSOLIDATED` and both entry IDs
-- Absorbed entries: delete the file, remove from `alpha/index.json`
-- When in doubt, don't merge — false merges lose meaning, missed merges just cost tokens
+> If `buffer_mode` is `"full"` AND `alpha/index.json` exists: read `full-ref.md` and run Steps 6 and 6b from there. Otherwise skip to Step 7.
 
 ### Step 7: Write instance notes
 
@@ -324,9 +258,7 @@ Write 2-3 plain-language sentences summarizing the session state. No encoding, n
 
 ### Step 9: Conservation enforcement
 
-> **Mode note**: In lite mode, conservation is simplified — only session summaries migrate between layers. See SKILL.md for compression rules.
-
-Check each layer against its size bound and enforce migration. See SKILL.md for layer size limits.
+Check each layer against its size bound and enforce migration.
 
 **If hot > 200 lines:**
 - Migrate oldest `recent_decisions` entries to warm `decisions_archive`
@@ -336,7 +268,6 @@ Check each layer against its size bound and enforce migration. See SKILL.md for 
 
 **If warm > max lines (default 500, project may override):**
 - Migrate oldest `decisions_archive` entries to cold `archived_decisions`
-- Migrate oldest `validation_log` entries to cold
 - When migrating an entry from warm to cold:
   1. Assign it a new `c:N` ID in the cold layer
   2. Leave a **redirect tombstone** in the warm layer:
@@ -346,31 +277,9 @@ Check each layer against its size bound and enforce migration. See SKILL.md for 
   3. Hot-layer `"see"` pointers continue to resolve via the tombstone
 - Re-check. If still over, warn the user.
 
-  **Note (alpha-aware):** After alpha migration, warm contains only `decisions_archive` + `validation_log` (~274 lines). Conservation rarely triggers. If it does, it's because decisions/validation entries accumulated beyond the cap — migrate the oldest to cold as above. The concept_map lives in the alpha bin (no size cap, no decay) and is not subject to warm conservation.
-
 **If cold > 500 lines:**
-- Trigger the archival questionnaire. Each step is a **⚠ MANDATORY POPUP** — you MUST use `AskUserQuestion` for each, wait for the response, and only then proceed to the next:
-
-  **Questionnaire Step 1 — Full scan + dependency map:**
-  Read entire cold layer. For each entry, compute nesting depth (how many other entries reference it). **⚠ MANDATORY POPUP**: Present results via `AskUserQuestion` — show depth-0 entries marked as safe to archive and depth > 0 entries showing what references them. Wait for the user to acknowledge before continuing.
-
-  **Questionnaire Step 2 — Pick ratio AND direction:**
-  **⚠ MANDATORY POPUP**: Present ratio choices via `AskUserQuestion` — options: 20/80, 33/66, 50/50. User also chooses which portion goes to the tower (smaller or larger). This is bidirectional — the user has full sovereignty. Wait for response.
-
-  **Questionnaire Step 3 — Pick entries:**
-  **⚠ MANDATORY POPUP**: Present entry list via `AskUserQuestion`. User selects specific entries for archival, informed by the dependency map. Wait for response. Do NOT auto-select entries.
-
-- Create a tower file: `handoff-tower-NNN-YYYY-MM-DD.json` in `.claude/buffer/`
-- Leave tombstones in cold for archived entries:
-
-  ```json
-  {
-    "id": "c:7",
-    "archived_to": "tower-001",
-    "was": "Brief description of archived entry",
-    "session_archived": "YYYY-MM-DD"
-  }
-  ```
+- Full mode: see `full-ref.md` for the tower archival questionnaire.
+- Lite mode: compress the oldest 30% by merging adjacent summaries, migrate compressed batch to cold.
 
 ### Step 10: Write all layers
 
@@ -394,22 +303,9 @@ If `.claude/README.md` already exists, update its file inventory section if new 
 
 Increment `sessions_since_full_scan` in the hot layer.
 
-### Step 11: MEMORY.md sync
+### Step 11: MEMORY.md sync (Full + Alpha only)
 
-Sync the project's MEMORY.md with current buffer state. Skip this step entirely if `memory_config` doesn't exist or `memory_config.integration` is `"none"`.
-
-**Status sync** (if integration is `"full"` or `"lite"`):
-- Read MEMORY.md at `memory_config.path`
-- Find the `## Status` section
-- Update to: `**Status**: [active_work.current_phase]. Next: [active_work.next_action].`
-- If no `## Status` section exists, add one before `## Buffer Integration` (or at end of file)
-
-**Promoted entry sync** (only if integration is `"full"` and promoted entries exist):
-- Check warm entries with `"promoted_to_memory"` field
-- If any changed since their promotion date: update the corresponding line in MEMORY.md's `## Stable Definitions` section
-- If a promoted entry migrated to cold (now a tombstone): remove its line from `## Stable Definitions` and clear the `"promoted_to_memory"` field from the tombstone
-
-This step is lightweight — at most a few line edits to MEMORY.md. It keeps the orientation card current without a full rewrite.
+> If `buffer_mode` is `"full"` AND `alpha/` exists: read `full-ref.md` for MEMORY.md sync protocol. Otherwise skip.
 
 ### Step 12: Register in global project registry
 
@@ -453,43 +349,11 @@ git commit -m "handoff: <brief description of session>"
 
 If tower files were created, include them in the commit as well. MEMORY.md changes (from Step 11) are NOT committed — MEMORY.md lives outside the repo in the Claude projects directory and is managed separately.
 
-### Step 14b: Grid Rebuild (if alpha exists)
+### Step 14b + 14c: Grid Rebuild + Resolution Check (Full + Alpha only)
 
-**Guard**: Only run if `alpha/index.json` exists in the buffer directory.
-
-```bash
-buffer_manager.py alpha-reinforce --buffer-dir .claude/buffer/
-buffer_manager.py alpha-clusters --buffer-dir .claude/buffer/
-buffer_manager.py alpha-grid-build --buffer-dir .claude/buffer/
-```
-
-Then amend the commit to include the updated grid:
-```bash
-git add .claude/buffer/alpha/index.json .claude/buffer/relevance_grid.json
-git commit --amend --no-edit
-```
-
-This ensures the grid reflects the new session's orientation before the next `/buffer:on`.
+> If `alpha/index.json` exists: read `full-ref.md` for grid rebuild (Step 14b) and resolution check (Step 14c). Otherwise skip.
 
 If `remote_backup` is true in the hot layer, follow the commit with `git push`.
-
-### Step 14c: Resolution Check (if alpha exists)
-
-**Guard**: Only run if `alpha/index.json` exists in the buffer directory.
-
-Run the resolution queue scanner to surface unresolved concept entries:
-
-```bash
-buffer_manager.py alpha-resolve --buffer-dir .claude/buffer/
-```
-
-If unresolved entries exist, print a brief summary after the grid rebuild:
-
-```
-Resolution queue: [N] unresolved entries ([M] ready, [K] awaiting design)
-```
-
-**Do NOT block** — this is informational only. The user decides whether to resolve now or defer. Do NOT auto-resolve. Do NOT prompt for resolution at session end — just surface the count so the user is aware.
 
 ### Step 15: Confirm
 
