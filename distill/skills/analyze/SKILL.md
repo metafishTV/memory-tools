@@ -42,6 +42,14 @@ Five passes from raw extraction to project integration. The analytic pass asks "
 - `narrative`: Identify characters, events, places, factions, worldbuilding elements, and plot connections. Note new entities and timeline events. Feeds Narrative Elements table.
 - `custom`: Follow the custom schema's interpretation template.
 
+**Pass 4 pre-checks** (concept_convergence only — run before writing the interpretation):
+
+1. **Forward note collision prevention**: Read `<repo>/.claude/skills/distill/forward_notes.json` if it exists. Use `next_number` for any new forward note candidates. Never assign a §5.NN number that already appears in the registry. If the registry does not exist, start at §5.70 (§5.1–§5.69 are reserved for existing forward notes).
+
+2. **Open question resolution check**: Scan `[interpretations_dir]/*.md` for `## Open Questions` sections (read only the OQ bullet lines, not entire files). For each prior open question, check if the current source's concepts provide an answer. If yes, note in the current interpretation: `> Resolves: [Source_Label] OQ: "[question text]"`. Best-effort — flag candidates, user confirms during MANDATORY REVIEW.
+
+3. **Existing mapping awareness**: If `alpha/index.json` exists, read the sources summary to see which concepts are already mapped per source. Prevents duplicate mappings and surfaces opportunities to strengthen existing weak mappings. If a concept from the current source maps to the same project element as a prior source, note it as a convergence (not a redundancy).
+
 **Pass 5 — Style**: Characterize the source's register, tone, and density. Always runs (style is source-intrinsic, not project-dependent). Record in the distillation header:
 - **Register**: analytic philosophy / continental phenomenology / empirical social science / formal-mathematical / practitioner-applied / mixed
 - **Tone**: personal/reflexive vs. impersonal/objective

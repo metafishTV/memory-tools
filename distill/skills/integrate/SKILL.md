@@ -240,6 +240,37 @@ After writing entries, update hot layer `convergence_web_digest`:
 - Increment `_meta.total_entries`
 - If new entry creates a new thematic cluster, add to `clusters` array
 
+### Step 4b: Forward Note Registry
+
+**Guard**: Only run if the interpretation file contains forward note candidates (lines matching `§5.\d+`).
+
+After convergence network writes, scan the interpretation for forward note candidates and update the project-level registry at `<repo>/.claude/skills/distill/forward_notes.json`.
+
+**If registry exists**: Read it, add new candidates, increment `next_number`.
+**If registry does not exist**: Create it with this structure:
+
+```json
+{
+  "next_number": 70,
+  "notes": {}
+}
+```
+
+For each `§5.NN` reference in the interpretation file, add an entry if `5.NN` is not already in the registry:
+
+```json
+"5.NN": {
+  "source": "[Source-Label]",
+  "description": "[one-line description from the interpretation]",
+  "status": "candidate",
+  "date": "[YYYY-MM-DD]"
+}
+```
+
+After adding all candidates, set `next_number` to `max(existing next_number, highest_seen_number + 1)`.
+
+Status lifecycle: `candidate` → `accepted` → `implemented` → `superseded`. Integration only writes `candidate`. Other transitions are manual.
+
 ### Step 5: Remove Marker and Validate
 
 ```bash
@@ -304,9 +335,19 @@ Integration:
   MEMORY.md:     [updated N defs | skipped]
   Resolution:    [N] entries queued for concept resolution
 
+Forward notes: [N candidates registered (§5.XX–§5.YY) | no candidates]
 Known Issues:    [clean run | N issues logged]
 ═══════════════════════════════════════════════════
 ```
+
+**Integration health check**: After printing the report, count interpretation files in `[interpretations-dir]/*.md` and compare against alpha-indexed sources. If any interpretation files lack corresponding alpha entries, append:
+
+```
+⚠ Integration gap: N interpretation files have no alpha entries.
+  Run /distill --recover to backfill missing sources.
+```
+
+This is informational only — do not auto-recover.
 
 **Minimal summary** (when `.distill_stats` is not available — e.g., File-Only Mode):
 
@@ -339,6 +380,65 @@ When no buffer plugin is detected:
 2. **INDEX.md Update**: same as Full Integration Step 1.
 3. **Project README Update**: same as below.
 4. **Skip all buffer/alpha operations silently** -- no warnings, no errors, no "buffer not found" messages.
+
+---
+
+## Recovery Mode
+
+When the user invokes `/distill --recover`, run the integration recovery pipeline to backfill orphaned distillations — sources that were distilled in File-Only Mode and never had their concept mappings written to the alpha bin.
+
+### Step R1: Dry Run
+
+Run the recovery script in preview mode:
+
+```bash
+python [plugin-scripts]/distill_recover_integration.py \
+  --interp-dir [interpretations-dir] \
+  --distill-dir [distillation-dir] \
+  --alpha-dir .claude/buffer/alpha \
+  --dry-run
+```
+
+### Step R2: Present Results for Review
+
+Present the dry-run output as **MANDATORY REVIEW** using the same table format as the interpretation summary:
+
+```
+### Recovery Preview — [N] orphaned sources
+
+| Source | Concept Mappings | Forward Notes | CW Entries |
+|--------|-----------------|---------------|------------|
+| [label] | [N] | [N] | [N] |
+
+Total: [N] cross_source entries, [M] convergence_web entries, [P] forward notes
+```
+
+**Wait for user approval before proceeding.** The user may exclude sources or adjust entries.
+
+### Step R3: Execute Recovery
+
+On approval, run the recovery script for real:
+
+```bash
+python [plugin-scripts]/distill_recover_integration.py \
+  --interp-dir [interpretations-dir] \
+  --distill-dir [distillation-dir] \
+  --alpha-dir .claude/buffer/alpha \
+  --output _recovery.json \
+  --forward-notes-out [repo]/.claude/skills/distill/forward_notes.json
+```
+
+Then pipe the recovery entries to `alpha-write`:
+
+```bash
+cat _recovery.json | buffer_manager.py alpha-write --buffer-dir .claude/buffer/
+```
+
+### Step R4: Post-Recovery
+
+1. Rebuild relevance grid (same as Step 5b).
+2. Clean up: `rm -f _recovery.json`
+3. Report: "Recovered N concepts, M convergence edges, P forward notes from Q sources."
 
 ---
 

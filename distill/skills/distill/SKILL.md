@@ -53,7 +53,9 @@ If not found in any location, this is a first-time project — proceed to step 2
 
    **Template-first principle**: Sub-skills provide inline templates for all output formats (interpretation files, INDEX.md rows, alpha-write JSON, README rows, Known Issues rows). Use the inline template directly — do NOT read existing output files to learn the pattern. Only read existing files when you need to UPDATE them (e.g., adding a row to an existing INDEX.md). For creation, the template IS the pattern.
 
-4. **Run the pipeline** in sequence, passing config context forward:
+4. **Check for `--recover` flag**: If the user invoked `/distill --recover`, skip the normal pipeline and route directly to `distill:integrate` in Recovery Mode (Steps R1–R4). Do not invoke extract or analyze.
+
+5. **Run the pipeline** in sequence, passing config context forward:
    a. Invoke `distill:extract` — extracts raw content from the source document
    b. Invoke `distill:analyze` — runs analytic passes and produces the distilled output
    c. Invoke `distill:integrate` — updates project indexes, buffer, and reference bin
@@ -82,3 +84,5 @@ For **independent batch**: process each source through the full pipeline sequent
 ## Arguments
 
 The source path can be provided as an argument or the user will be asked for it during the extract step.
+
+**`--recover`**: Skip the normal distillation pipeline and run **integration recovery** instead. This scans all interpretation files, detects orphaned sources (distilled but never integrated into the alpha bin), and backfills missing entries. Routes directly to the integrate skill's Recovery Mode (Steps R1–R4). Requires buffer plugin and alpha bin to exist.

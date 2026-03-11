@@ -2,6 +2,15 @@
 
 All notable changes to buffer are documented here.
 
+## [distill 1.12.0] - 2026-03-11
+
+### Cross-Distillation Intelligence Layer
+- **Integration recovery** — New `distill_recover_integration.py` script scans all interpretation files, detects orphaned distillations (sources that ran in File-Only Mode), and generates alpha-write compatible JSON to backfill missing cross_source and convergence_web entries. Supports `--dry-run` preview. Invoke via `/distill --recover`.
+- **Forward note registry** — New `forward_notes.json` at `<repo>/.claude/skills/distill/` tracks forward note number allocation with collision prevention and lifecycle tracking (`candidate` → `accepted` → `implemented` → `superseded`). Written by integrate, read by Pass 4 before assigning new §5.NN numbers.
+- **Pass 4 cross-distillation awareness** — Before writing the interpretation, Pass 4 now reads the forward note registry (collision prevention), scans prior open questions (resolution check), and checks existing alpha mappings (duplicate prevention). Best-effort checks — candidates flagged for user review.
+- **Integration health check** — Post-integration report now counts interpretation files vs alpha-indexed sources. Reports orphan gap with recovery instructions when detected.
+- **Recovery mode** — New `/distill --recover` path skips normal pipeline and routes to integrate's Recovery Mode (Steps R1–R4): dry-run preview → mandatory review → alpha-write execution → grid rebuild.
+
 ## [distill 1.11.0] - 2026-03-11
 
 ### Config Discovery + Runtime Install Verification + Multi-Source
