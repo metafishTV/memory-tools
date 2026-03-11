@@ -16,10 +16,20 @@ These commands extend the core `buffer_manager.py` tooling for reference memory 
 - `alpha-reinforce --buffer-dir .claude/buffer/` — Compute reinforcement scores + cw_graph from convergence_web adjacency.
 - `alpha-clusters --buffer-dir .claude/buffer/` — Compute cluster analysis from cw_graph (requires `alpha-reinforce` first).
 - `alpha-neighborhood --buffer-dir .claude/buffer/ --id w:N [--hops 2]` — Traverse convergence_web neighborhood.
-- `alpha-health --buffer-dir .claude/buffer/` — Health report (Youn ratio, primes, clusters, staleness).
+- `alpha-health --buffer-dir .claude/buffer/` — Health report (Youn ratio, primes, clusters, staleness, wholeness, promotion candidates).
 - `alpha-grid-build --buffer-dir .claude/buffer/` — Build mesological relevance grid (pre-computed alpha*sigma scores).
 
 **Convergence types**: `[convergence]` (default), `[divergence]`, `[tension]`, `[wall]` (anti-conflation — marks concepts that look similar but MUST NOT be conflated; acts as an inhibitory edge that breaks conceptual feedback loops).
+
+### Wholeness, Spreading Activation, and Promotion
+
+Three dynamic features operate on the alpha-sigma boundary:
+
+**Wholeness (W)**: A rolling energy scalar measuring coherence of the active concept field. W = count of convergence web edges where both endpoints are active (via sigma hits). Computed by `alpha-reinforce` and updated incrementally by the sigma hook on every activation. Higher W = more coherent session engagement with the convergence web. Reported in `alpha-health`.
+
+**Spreading activation**: When the sigma hook matches a concept, it propagates to 1-hop neighbors in the convergence web (via `.cw_adjacency` cache). Neighbors activated by multiple source concepts rank higher. Injection format: `sigma grid [cell]: w:62 alterity (levinas) | spread: w:73 rhizomatic`. This creates Hopfield-style pattern completion — mentioning one concept surfaces structurally adjacent concepts the user didn't explicitly name.
+
+**Upward promotion** (anopressive channel): `alpha-health` reports concepts with 3+ sigma hits as promotion candidates. During `/buffer:off`, review these: frequently activated cold/warm entries may deserve promotion to a more accessible layer. This closes the anapressive-anopressive loop — conservation pushes down (anapressive), promotion pulls up based on operational relevance (anopressive).
 
 ---
 

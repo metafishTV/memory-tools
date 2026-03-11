@@ -2,6 +2,14 @@
 
 All notable changes to buffer are documented here.
 
+## [buffer 2.2.0] - 2026-03-11
+
+### Wholeness, Spreading Activation, and Upward Promotion
+- **Wholeness (W)** — Dynamic rolling energy scalar measuring coherence of the active concept field. W = count of convergence web edges where both endpoints are sigma-activated. Computed by `alpha-reinforce`, updated incrementally by sigma hook on every activation. Reported in `alpha-health`. Inspired by Alexander's Wholeness (geometric coherence) formalized via Hopfield energy function.
+- **Spreading activation** — Sigma hook now propagates matched concepts to 1-hop convergence web neighbors. Uses `.cw_adjacency` cache (written by `alpha-reinforce`) for O(degree) spreading without loading full index. Neighbors activated by multiple source concepts rank higher. Injection format: `| spread: w:73 rhizomatic`. Creates Hopfield-style pattern completion through the convergence web — mentioning one concept surfaces structurally adjacent concepts.
+- **Upward promotion** (anopressive channel) — `alpha-health` now reports concepts with 3+ sigma hits as promotion candidates. `/buffer:off` conservation step includes upward promotion check: frequently activated concepts in cold/warm can be promoted to `concept_map_digest.flagged` for immediate access. Closes the anapressive-anopressive loop (conservation pushes down, promotion pulls up based on operational relevance).
+- **Adjacency cache** — `alpha-reinforce` now writes `.cw_adjacency` (compact adjacency list + concept names) alongside index.json. Enables sigma hook spreading activation and incremental W updates without loading full index.
+
 ## [distill 1.12.0] - 2026-03-11
 
 ### Cross-Distillation Intelligence Layer

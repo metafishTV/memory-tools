@@ -683,6 +683,109 @@ def record_grid_hit(buffer_dir, concept_ids):
 
 
 # ---------------------------------------------------------------------------
+# Spreading activation (Hopfield inference through convergence web)
+# ---------------------------------------------------------------------------
+
+def compute_spread(concept_ids, adjacency, max_spread=2):
+    """Hopfield-style spreading activation through convergence web.
+
+    For each activated concept, propagates to 1-hop neighbors.
+    Neighbors activated by multiple source concepts rank higher
+    (multi-source convergence = stronger field effect).
+
+    Returns list of (neighbor_id, activation_count) tuples.
+    """
+    if not adjacency or not concept_ids:
+        return []
+
+    activated = set(concept_ids)
+    candidates = {}
+
+    for cid in concept_ids:
+        for neighbor in adjacency.get(cid, []):
+            if neighbor not in activated:
+                candidates[neighbor] = candidates.get(neighbor, 0) + 1
+
+    ranked = sorted(candidates.items(), key=lambda x: x[1], reverse=True)
+    return ranked[:max_spread]
+
+
+def update_wholeness(buffer_dir, new_concept_ids, adjacency, edge_count=0):
+    """Incrementally update wholeness W after new concept activation.
+
+    delta_W = count of already-active neighbors for each new activation.
+    O(degree) per concept — fast enough for sigma hook (<5ms).
+    """
+    if not adjacency or not new_concept_ids:
+        return
+
+    wholeness_path = os.path.join(buffer_dir, '.sigma_wholeness')
+    state = read_json(wholeness_path) or {
+        'W': 0, 'W_potential': 0, 'active_set': [], 'history': []
+    }
+
+    active_set = set(state.get('active_set', []))
+    delta_w = 0
+
+    for cid in new_concept_ids:
+        if cid in active_set:
+            continue
+        for neighbor in adjacency.get(cid, []):
+            if neighbor in active_set:
+                delta_w += 1
+        active_set.add(cid)
+
+    state['W'] = state.get('W', 0) + delta_w
+    state['active_set'] = sorted(active_set)
+    state['active_count'] = len(active_set)
+    if edge_count > 0:
+        state['W_potential'] = edge_count
+    w_potential = state.get('W_potential', 0)
+    if w_potential > 0:
+        state['W_ratio'] = round(state['W'] / w_potential, 4)
+
+    from datetime import date
+    state['last_updated'] = str(date.today())
+
+    try:
+        with open(wholeness_path, 'w', encoding='utf-8') as f:
+            json.dump(state, f, indent=2)
+    except OSError:
+        pass
+
+
+def apply_spread_and_wholeness(buffer_dir, concept_ids, injection):
+    """Apply spreading activation and wholeness update to an injection.
+
+    Reads .cw_adjacency cache (written by alpha-reinforce), computes
+    spread neighbors, updates incremental W. Returns modified injection.
+    """
+    adj_path = os.path.join(buffer_dir, '.cw_adjacency')
+    adj_data = read_json(adj_path)
+    if not adj_data or not concept_ids:
+        return injection
+
+    adjacency = adj_data.get('adjacency', {})
+    concepts_lookup = adj_data.get('concepts', {})
+    edge_count = adj_data.get('edge_count', 0)
+
+    # Spreading activation
+    spread = compute_spread(concept_ids, adjacency)
+    if spread:
+        spread_ids = [sid for sid, _ in spread]
+        record_grid_hit(buffer_dir, spread_ids)
+        spread_parts = [
+            f"{sid} {concepts_lookup.get(sid, '?')}" for sid, _ in spread
+        ]
+        injection += ' | spread: ' + ' | '.join(spread_parts)
+
+    # Incremental wholeness update
+    update_wholeness(buffer_dir, concept_ids, adjacency, edge_count)
+
+    return injection
+
+
+# ---------------------------------------------------------------------------
 # Tick counter — periodic resolution check trigger
 # ---------------------------------------------------------------------------
 
@@ -785,6 +888,7 @@ def main():
     if grid_result is not None:
         injection, concept_ids = grid_result
         record_grid_hit(buffer_dir, concept_ids)
+        injection = apply_spread_and_wholeness(buffer_dir, concept_ids, injection)
         emit(_with_resolution(
             {"suppressOutput": True, "systemMessage": injection},
             resolution_due))
@@ -842,6 +946,14 @@ def main():
         emit(_with_resolution({}, resolution_due))
 
     injection = format_alpha_hits(concept_matches, sources_data)
+
+    # Spreading activation through convergence web
+    matched_ids = [
+        ids[0] for _, ids, _ in concept_matches
+        if isinstance(ids, list) and ids
+    ]
+    injection = apply_spread_and_wholeness(buffer_dir, matched_ids, injection)
+
     emit(_with_resolution(
         {"suppressOutput": True, "systemMessage": injection},
         resolution_due))

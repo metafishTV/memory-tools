@@ -281,6 +281,19 @@ Check each layer against its size bound and enforce migration.
 - Full mode: see `full-ref.md` for the tower archival questionnaire.
 - Lite mode: compress the oldest 30% by merging adjacent summaries, migrate compressed batch to cold.
 
+**Upward promotion (anopressive channel — Full + Alpha only):**
+
+After conservation enforcement (downward migration), check for upward promotion candidates:
+
+1. Run `alpha-health --buffer-dir .claude/buffer/` and check the PROMOTION CANDIDATES section
+2. Any concept with 3+ sigma hits is a candidate for promotion (it's being operationally used)
+3. **⚠ MANDATORY POPUP**: If candidates exist, present to user via `AskUserQuestion`:
+   - **Promote** — "These alpha concepts were activated [N]+ times this session. Promote to hot-layer `concept_map_digest.flagged` for immediate access next session: [list top 5 with hit counts]"
+   - **Skip** — "Keep current layer assignments."
+4. If promoted: add to `concept_map_digest.flagged` with `"reason": "sigma_promotion"`
+
+This closes the anapressive-anopressive loop: conservation pushes entries down based on age/size (anapressive absorption), promotion pulls entries up based on operational relevance (anopressive expression).
+
 ### Step 10: Write all layers
 
 > **Mode note**: Lite mode writes only the lite schemas (see SKILL.md). Full mode writes all schemas.

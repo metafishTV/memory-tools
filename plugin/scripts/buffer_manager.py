@@ -2253,6 +2253,66 @@ def compute_reinforcement(entries, concept_index, sources_data,
     return reinforcement, cw_edges, unresolved
 
 
+def compute_wholeness(cw_edges, active_set):
+    """Compute wholeness W — coherence of the active concept field.
+
+    W = count of convergence web edges where both endpoints are active.
+    Derived from Hopfield energy: E = -1/2 * sum(w_ij * s_i * s_j)
+    (Alexander's Wholeness as computational measure of system coherence.)
+
+    Args:
+        cw_edges: {cw_id: {'thesis': w_id, 'athesis': w_id}}
+        active_set: set of w: IDs considered active (from sigma_hits)
+
+    Returns:
+        dict with W, W_potential, W_ratio, active_count
+    """
+    if not cw_edges:
+        return {'W': 0, 'W_potential': 0, 'W_ratio': 0.0, 'active_count': 0}
+
+    w_active = sum(
+        1 for edge in cw_edges.values()
+        if edge['thesis'] in active_set and edge['athesis'] in active_set
+    )
+    w_potential = len(cw_edges)
+    return {
+        'W': w_active,
+        'W_potential': w_potential,
+        'W_ratio': round(w_active / w_potential, 4) if w_potential > 0 else 0.0,
+        'active_count': len(active_set),
+    }
+
+
+def build_adjacency_cache(cw_edges, entries):
+    """Build compact adjacency list + concept names from cw_graph.
+
+    Written to .cw_adjacency for sigma hook to use in spreading activation
+    and incremental wholeness updates without loading full index.json.
+    """
+    adj = {}
+    involved = set()
+    for edge in cw_edges.values():
+        t, a = edge['thesis'], edge['athesis']
+        adj.setdefault(t, [])
+        adj.setdefault(a, [])
+        if a not in adj[t]:
+            adj[t].append(a)
+        if t not in adj[a]:
+            adj[a].append(t)
+        involved.add(t)
+        involved.add(a)
+
+    concepts = {}
+    for wid in involved:
+        einfo = entries.get(wid, {})
+        concept = einfo.get('concept', '?')
+        if ':' in concept:
+            concept = concept.split(':', 1)[1]
+        concepts[wid] = concept
+
+    return adj, concepts
+
+
 def cmd_alpha_reinforce(args):
     """Compute reinforcement scores and cw_graph, write to index.json."""
     buf_dir = Path(args.buffer_dir)
@@ -2306,12 +2366,30 @@ def cmd_alpha_reinforce(args):
     index['reinforcement'] = reinforcement
     index['cw_graph'] = cw_edges
     index['reinforcement_computed'] = datetime.now().strftime('%Y-%m-%d')
+
+    # Wholeness computation (Alexander-Hopfield energy)
+    active_set = set(temporal_data.keys()) if temporal_data else set()
+    wholeness = compute_wholeness(cw_edges, active_set)
+    index['wholeness'] = wholeness
+
     idx_path = alpha_index_path(buf_dir)
     write_json(idx_path, index)
+
+    # Adjacency cache for sigma hook (spreading activation + incremental W)
+    adj, adj_concepts = build_adjacency_cache(cw_edges, entries)
+    write_json(str(buf_dir / '.cw_adjacency'), {
+        'adjacency': adj,
+        'concepts': adj_concepts,
+        'edge_count': len(cw_edges),
+        'computed': datetime.now().strftime('%Y-%m-%d'),
+    })
+
     result_summary['status'] = 'ok'
+    result_summary['wholeness'] = wholeness
     result_summary['message'] = (
         f"Wrote reinforcement ({len(reinforcement)} entries) + "
-        f"cw_graph ({len(cw_edges)} edges) to index.json"
+        f"cw_graph ({len(cw_edges)} edges) + wholeness (W={wholeness['W']}) "
+        f"to index.json. Adjacency cache: {len(adj)} concepts."
     )
     print(json.dumps(result_summary, indent=2))
 
@@ -2604,17 +2682,9 @@ def cmd_alpha_health(args):
         key=lambda x: x[1]['degree'], reverse=True
     )
 
-    # Staleness check
-    hits_path = buf_dir / '.sigma_hits'
-    referenced = set()
-    if hits_path.exists():
-        try:
-            with open(hits_path, 'r', encoding='utf-8') as f:
-                for line in f:
-                    parts = line.strip().split()
-                    referenced.update(p for p in parts if p.startswith('w:'))
-        except OSError:
-            pass
+    # Temporal data from sigma hits (for staleness + promotion)
+    temporal_data = _read_sigma_hits(buf_dir)
+    referenced = set(temporal_data.keys())
 
     stale = [eid for eid in reinforcement
              if eid not in referenced and reinforcement[eid]['degree'] > 0]
@@ -2659,9 +2729,23 @@ def cmd_alpha_health(args):
         f"TAP distribution:  {len(tap_active)} adjacent (finite), "
         f"{zero_tap} unadjacent (infinite possibility)",
         f"Temporal feedback: {temporal_active} concepts with sigma hits",
+    ]
+
+    # Wholeness (Alexander-Hopfield energy)
+    wholeness = index.get('wholeness', {})
+    if wholeness:
+        lines.extend([
+            "",
+            f"Wholeness (W):     {wholeness.get('W', 0)} active-active edges "
+            f"/ {wholeness.get('W_potential', 0)} total "
+            f"(ratio: {wholeness.get('W_ratio', 0.0):.4f})",
+            f"  Active concepts: {wholeness.get('active_count', 0)}",
+        ])
+
+    lines.extend([
         "",
         "--- PRIMES (top 20 by reinforcement degree) ---",
-    ]
+    ])
     for eid, rdata in primes[:20]:
         concept = entries.get(eid, {}).get('concept', '?')
         lines.append(
@@ -2687,6 +2771,27 @@ def cmd_alpha_health(args):
             lines.append(f"  {eid:8s} {concept}")
         if len(stale) > 10:
             lines.append(f"  ... and {len(stale) - 10} more")
+
+    # Promotion candidates (anopressive channel — upward flow)
+    promotion_candidates = [
+        (eid, tdata) for eid, tdata in temporal_data.items()
+        if tdata.get('ref_count', 0) >= 3
+    ]
+    if promotion_candidates:
+        promotion_candidates.sort(key=lambda x: x[1]['ref_count'], reverse=True)
+        lines.append("")
+        lines.append(
+            f"--- PROMOTION CANDIDATES ({len(promotion_candidates)} "
+            f"concepts with 3+ sigma hits) ---"
+        )
+        for eid, tdata in promotion_candidates[:10]:
+            concept = entries.get(eid, {}).get('concept', '?')
+            lines.append(
+                f"  {eid:8s} refs={tdata['ref_count']:3d}  "
+                f"last={tdata.get('last_ref', '?')}  {concept}"
+            )
+        if len(promotion_candidates) > 10:
+            lines.append(f"  ... and {len(promotion_candidates) - 10} more")
 
     lines.append("")
     lines.append("=" * 60)
