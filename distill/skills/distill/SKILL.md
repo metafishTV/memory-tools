@@ -63,7 +63,29 @@ If not found in any location, this is a first-time project — proceed to step 2
    ```
    Present the report to the user. If consolidation clusters are found, offer: "Would you like to consolidate any of these clusters? Use `--merge` to specify notes."
 
-6. **Run the pipeline** in sequence, passing config context forward:
+6. **Check for `--repass` flag**: If the user invoked `/distill --repass`, skip the normal pipeline and process the re-pass queue:
+   ```bash
+   python [plugin-scripts]/distill_manifest.py repass \
+     --manifest [repo]/.claude/skills/distill/manifest.json
+   ```
+   Present the queue to the user. Ask which source(s) to re-analyze. Route selected sources to `distill:analyze` in re-pass mode, then to `distill:integrate` for manifest update.
+
+7. **Check for `--manifest` flag**: If the user invoked `/distill --manifest`, display manifest health:
+   ```bash
+   python [plugin-scripts]/distill_manifest.py health \
+     --manifest [repo]/.claude/skills/distill/manifest.json
+   ```
+   Present the report to the user.
+
+8. **Check for `--quality` flag**: If the user invoked `/distill --quality [source]`:
+   ```bash
+   python [plugin-scripts]/distill_manifest.py quality \
+     --manifest [repo]/.claude/skills/distill/manifest.json \
+     [--source [source-label]] --format card
+   ```
+   If no source specified, use `--format table` for the full distribution.
+
+9. **Run the pipeline** in sequence, passing config context forward:
    a. Invoke `distill:extract` — extracts raw content from the source document
    b. Invoke `distill:analyze` — runs analytic passes and produces the distilled output
    c. Invoke `distill:integrate` — updates project indexes, buffer, and reference bin
@@ -96,3 +118,9 @@ The source path can be provided as an argument or the user will be asked for it 
 **`--recover`**: Skip the normal distillation pipeline and run **integration recovery** instead. This scans all interpretation files, detects orphaned sources (distilled but never integrated into the alpha bin), and backfills missing entries. Routes directly to the integrate skill's Recovery Mode (Steps R1–R4). Requires buffer plugin and alpha bin to exist.
 
 **`--notes-health`**: Run forward note health analysis without a full distillation. Scans the forward note registry for consolidation clusters (related notes that may warrant merging), supersession candidates (notes that reference or duplicate others), and source density. Outputs a diagnostic report. Optionally cross-references against alpha concept_index for semantic similarity.
+
+**`--repass`**: Process the re-pass queue. Shows all queued sources with their triggering sources, activation levels, and target concepts. Asks the user which to process. Routes to `distill:analyze` in re-pass mode — only the specified concepts are re-analyzed, not the full distillation. After re-analysis, integration runs to update alpha entries and the manifest. Iteration cap: 3 per source.
+
+**`--manifest`**: Display manifest health summary — sources, concepts, cw edges, forward notes, hub scores, isolated sources, quality distribution, repass queue depth, and graph Laplacian metrics. Shorthand for `distill_manifest.py health --manifest [path]`.
+
+**`--quality [source]`**: Show quality card for a specific source, or quality distribution table for all sources. Each card shows: concept_density, coverage_ratio, cross_ref_density, forward_note_yield, convergence_contribution, and composite_quality (harmonic mean). Use `--quality` (no source) for the full table sorted by composite quality.

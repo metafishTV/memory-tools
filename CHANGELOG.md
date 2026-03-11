@@ -2,6 +2,23 @@
 
 All notable changes to buffer are documented here.
 
+## [distill 2.0.0] - 2026-03-11
+
+### Stateful Knowledge System — Manifest, Quality Metrics, Graph Math, RIP Feedback
+- **Distillation manifest** — New `distill_manifest.py` engine (~620 lines) with 8 commands: `init`, `update`, `query`, `health`, `quality`, `repass`, `adjacency`, `export`. Produces `manifest.json` at `<repo>/.claude/skills/distill/` — single source of truth for all distillation state. Polymorphic consumer views (pass4, integrate, sigma, health) return tailored projections.
+- **Quality metrics** — Per-source quality assessment: concept_density, coverage_ratio, cross_ref_density, forward_note_yield, convergence_contribution, composite_quality (harmonic mean). Quality cards displayed during integration. Sources below 0.20 composite flagged for review.
+- **Source-source adjacency matrix** — Built from convergence web edges. Structurally isomorphic to sigma-TAP's L-matrix at the source level. Hub scores (normalized degree), clustering coefficients, isolation detection.
+- **Graph Laplacian** — L = D - A computed with numpy (graceful fallback without). Algebraic connectivity (Fiedler value) measures graph cohesion. Eigenvalue analysis detects near-disconnected components.
+- **Spreading activation** — When a source is updated, activation propagates through the adjacency graph with exponential decay (0.5) and threshold (0.2). Sources exceeding threshold are added to the repass queue. Bounds recursion naturally.
+- **Information gain** — Per-concept: `-log2(prior_frequency / total_concepts)`. Novel mappings get maximum IG, well-confirmed ones get low IG. Stored in manifest per concept.
+- **RIP feedback loops** — Recursion (repass queue), Iteration (convergence criterion, cap 3), Persistence (manifest JSON). Feedforward: new distillations trigger re-pass of prior sources via spreading activation. Feedback: prior open questions resolved by new sources. Polyvocal: multiple triggers merged.
+- **Re-pass mode** — New `/distill --repass` flag. Analyze runs concept-level targeted re-analysis using triggering sources' perspectives. Only revisits specified concepts, not full distillation. Integration updates manifest and alpha entries.
+- **Living differentiate** — Step 0 now reads manifest stats when presenting project config. New "Verify & update" option re-scans adjacency and quality metrics.
+- **Integrate manifest steps** — Steps 5c (manifest update) and 5d (quality card + repass report) added after grid rebuild.
+- **Test suite** — 59 tests across 10 test classes covering IO, metrics, graph math, spreading activation, repass queue, bootstrap, parsing, and stats.
+- **Sigma-TAP bootstrap** — Manifest initialized with 33 sources, 309 concepts, 86 cw edges, 5 hubs (Cortes, Emery, Lizier, Levinas, Sartre), 15 isolated sources.
+- **New dispatcher flags** — `--repass`, `--manifest`, `--quality [source]`.
+
 ## [distill 1.13.0] - 2026-03-11
 
 ### Forward Note Consolidation

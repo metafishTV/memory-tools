@@ -1,0 +1,125 @@
+{
+  "version": "2.0.0",
+  "project": "test-project",
+  "created": "2026-03-11",
+  "updated": "2026-03-11",
+  "sources": {
+    "source-alpha": {
+      "date_distilled": "2026-03-10",
+      "source_type": "PDF",
+      "extraction_route": "A",
+      "register": "empirical",
+      "distillation_file": "distilled/Source-Alpha.md",
+      "interpretation_file": "interpretations/Source-Alpha.md",
+      "concepts": {
+        "concept_one": {
+          "maps_to": "framework_element_a",
+          "relationship": "confirms",
+          "alpha_id": "w:1",
+          "information_gain": 2.5
+        },
+        "concept_two": {
+          "maps_to": "framework_element_b",
+          "relationship": "extends",
+          "alpha_id": "w:2",
+          "information_gain": 3.0
+        }
+      },
+      "forward_notes": ["5.70"],
+      "cw_ids": ["cw:1", "cw:2"],
+      "metrics": {
+        "concept_density": 0.5,
+        "coverage_ratio": 1.0,
+        "cross_ref_density": 1.0,
+        "forward_note_yield": 0.5,
+        "convergence_contribution": 0.4,
+        "composite_quality": 0.614
+      },
+      "iteration": 1,
+      "open_questions": ["Does concept_one apply to edge cases?"],
+      "resolved_by": [],
+      "resolves": []
+    },
+    "source-beta": {
+      "date_distilled": "2026-03-10",
+      "source_type": "PDF",
+      "extraction_route": "A",
+      "register": "continental",
+      "distillation_file": "distilled/Source-Beta.md",
+      "interpretation_file": "interpretations/Source-Beta.md",
+      "concepts": {
+        "concept_three": {
+          "maps_to": "framework_element_a",
+          "relationship": "confirms",
+          "alpha_id": "w:3",
+          "information_gain": 1.0
+        }
+      },
+      "forward_notes": [],
+      "cw_ids": ["cw:1"],
+      "metrics": {
+        "concept_density": 0.25,
+        "coverage_ratio": 1.0,
+        "cross_ref_density": 1.0,
+        "forward_note_yield": 0.0,
+        "convergence_contribution": 0.2,
+        "composite_quality": 0.0
+      },
+      "iteration": 1,
+      "open_questions": [],
+      "resolved_by": [],
+      "resolves": []
+    },
+    "source-gamma": {
+      "date_distilled": "2026-03-10",
+      "source_type": "web",
+      "extraction_route": "W",
+      "register": "practitioner",
+      "distillation_file": "distilled/Source-Gamma.md",
+      "interpretation_file": "interpretations/Source-Gamma.md",
+      "concepts": {
+        "concept_four": {
+          "maps_to": "framework_element_c",
+          "relationship": "novel",
+          "alpha_id": "w:4",
+          "information_gain": 4.0
+        }
+      },
+      "forward_notes": ["5.71"],
+      "cw_ids": [],
+      "metrics": {
+        "concept_density": 0.1,
+        "coverage_ratio": 1.0,
+        "cross_ref_density": 0.0,
+        "forward_note_yield": 1.0,
+        "convergence_contribution": 0.0,
+        "composite_quality": 0.0
+      },
+      "iteration": 1,
+      "open_questions": ["Is concept_four actually distinct from concept_one?"],
+      "resolved_by": [],
+      "resolves": []
+    }
+  },
+  "adjacency": {
+    "matrix": {
+      "source-alpha": {"source-beta": 2},
+      "source-beta": {"source-alpha": 2}
+    },
+    "laplacian_eigenvalues": [],
+    "clusters": [],
+    "hub_scores": {
+      "source-alpha": 1.0,
+      "source-beta": 1.0
+    }
+  },
+  "repass_queue": [],
+  "stats": {
+    "total_sources": 3,
+    "total_concepts": 4,
+    "total_cw_edges": 5,
+    "total_forward_notes": 2,
+    "mean_quality": 0.205,
+    "isolation_count": 1
+  }
+}

@@ -22,12 +22,14 @@ Check if `<repo>/.claude/skills/distill/SKILL.md` exists:
 1. **If it exists**: Read the project skill's Configuration section (project name, map type, paths). Count distillations: glob `[distillation_dir]/*.md` but **exclude** `_v[N]_` suffixed files (archived redistillations) from the count — those are historical versions, not current distillations. **MANDATORY POPUP**: You MUST present this choice via `AskUserQuestion`. Do NOT auto-select. Wait for the user's response.
 
    Options:
-   - **Use this configuration** -- "I found an existing distill configuration for **[project name]** ([map type] tracking, [N] distillations so far). Proceed with it."
+   - **Use this configuration** -- "I found an existing distill configuration for **[project name]** ([map type] tracking, [N] distillations so far). Proceed with it." If a manifest exists at `<repo>/.claude/skills/distill/manifest.json`, enrich the message with manifest stats: "Manifest: [N] concepts, [M] cw edges, [P] forward notes. Quality: mean composite [Q], [I] isolated sources, [R] in repass queue."
+   - **Verify & update** -- "Re-scan project state and update manifest metrics (useful after manual edits or buffer changes)." This runs `distill_manifest.py adjacency` and `quality` to refresh computed metrics without changing source entries. Only shown if a manifest exists.
    - **Switch project** -- Use a different project's configuration.
    - **Pure distillation** -- Just extract and distill this one source, no project tracking.
    - **Re-differentiate** -- Reconfigure this project from scratch (preserves glossary, known issues, and existing distillations).
 
    - If "Use this configuration": follow that project skill for the distillation.
+   - If "Verify & update": run `distill_manifest.py adjacency --manifest [path] --alpha-dir [path]` then show the updated health summary. After verification, present "Use this configuration" or "Re-differentiate" as follow-up options.
    - If "Switch project": read `~/.claude/buffer/projects.json` for the registered project list. **MANDATORY POPUP**: present the list via `AskUserQuestion` and let the user pick (include a "Name another project" option). Wait for response. If no registry exists or it's empty, present "Pure distillation" or "Re-differentiate" as options via `AskUserQuestion`.
    - If "Pure distillation": set `pure_mode = true`, proceed to Pure Distillation Fast Path.
    - If "Re-differentiate": proceed to Differentiation below.

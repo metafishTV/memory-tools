@@ -328,6 +328,55 @@ buffer_manager.py alpha-grid-build --buffer-dir .claude/buffer/
 
 These run silently (~100ms total for typical corpus). The grid rebuild ensures the sigma hook's per-message O(1) lookup reflects the newly added entries immediately. If any command fails, log it in Known Issues but continue — the sigma hook falls through to IDF scoring gracefully when the grid is absent or stale.
 
+### Step 5c: Manifest Update
+
+**Guard**: Only run if `<repo>/.claude/skills/distill/manifest.json` exists OR can be created.
+
+After alpha writes, grid rebuild, and forward note registry updates, update the distillation manifest:
+
+```bash
+python [plugin-scripts]/distill_manifest.py update \
+  --manifest [repo]/.claude/skills/distill/manifest.json \
+  --source-label [Source-Label] \
+  --interp-file [interpretations-dir]/[Source-Label].md \
+  --alpha-dir .claude/buffer/alpha \
+  --alpha-ids [comma-separated w: IDs from Step 2] \
+  --cw-ids [comma-separated cw: IDs from Step 4] \
+  --forward-notes [repo]/.claude/skills/distill/forward_notes.json
+```
+
+This command:
+1. Adds/updates the source entry in the manifest with concept mappings, alpha IDs, cw IDs, and forward notes
+2. Computes quality metrics (concept_density, coverage_ratio, cross_ref_density, forward_note_yield, convergence_contribution, composite_quality)
+3. Checks for re-pass triggers via spreading activation on the source-source adjacency graph
+4. Updates manifest stats
+
+If the manifest does not exist, skip this step silently — manifest bootstrap (`distill_manifest.py init`) should be run first.
+
+### Step 5d: Quality Card & Re-pass Report
+
+**Guard**: Only run if Step 5c succeeded (manifest was updated).
+
+Read the manifest update output (JSON from Step 5c). Append to the integration report:
+
+```
+Quality Card: [Source-Label]
+  composite_quality: [value]
+  concept_density: [value]  coverage_ratio: [value]
+  cross_ref_density: [value]  convergence_contribution: [value]
+```
+
+If `composite_quality < 0.20`, also append:
+```
+Quality alert: [Source-Label] composite_quality=[value] — low integration density.
+Consider: Is this source peripheral, or should integration be deepened?
+```
+
+If the repass queue is non-empty after the update, append:
+```
+Repass queue: [N] entries. Run /distill --repass to review.
+```
+
 ### Step 6: Integration Results Summary
 
 Print an **end-to-end distillation report** summarizing the full pipeline. This is informational — no popup or user decision needed. The pipeline proceeds to cleanup automatically.

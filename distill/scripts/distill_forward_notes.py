@@ -324,7 +324,7 @@ def cmd_health(args):
             for nid in cluster['notes']:
                 desc = notes[nid].get('description', '')[:80]
                 source = notes[nid].get('source', '?')[:30]
-                lines.append(f"    §5.{nid:4s}  [{source}]")
+                lines.append(f"    §{nid:8s}  [{source}]")
                 lines.append(f"           {desc}")
     else:
         lines.append("")
@@ -336,7 +336,7 @@ def cmd_health(args):
         lines.append(f"--- SUPERSESSION CANDIDATES ({len(superseded)}) ---")
         for s in superseded:
             desc = notes[s['note']].get('description', '')[:60]
-            lines.append(f"  §5.{s['note']:4s}  {s['reason']}")
+            lines.append(f"  §{s['note']:8s}  {s['reason']}")
             lines.append(f"           {desc}")
 
     lines.append("")

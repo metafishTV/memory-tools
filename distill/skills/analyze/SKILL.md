@@ -44,11 +44,38 @@ Five passes from raw extraction to project integration. The analytic pass asks "
 
 **Pass 4 pre-checks** (concept_convergence only — run before writing the interpretation):
 
+0. **Manifest query** (if manifest exists): Read the distillation manifest for cross-source awareness:
+   ```bash
+   python [plugin-scripts]/distill_manifest.py query \
+     --manifest [repo]/.claude/skills/distill/manifest.json \
+     --consumer pass4 \
+     --forward-notes [repo]/.claude/skills/distill/forward_notes.json
+   ```
+   This returns: forward note `next_number`, existing concept mappings across all sources (for collision/convergence detection), open questions from prior sources, and repass queue depth. If the manifest does not exist, fall through to pre-checks 1-3 below (they work independently).
+
 1. **Forward note collision prevention**: Read `<repo>/.claude/skills/distill/forward_notes.json` if it exists. Use `next_number` for any new forward note candidates. Never assign a §5.NN number that already appears in the registry. If the registry does not exist, start at §5.70 (§5.1–§5.69 are reserved for existing forward notes).
+   - **CRITICAL**: NEVER write a registry entry keyed to an existing §5.1–§5.69 section number. Those numbers belong to the design doc, not the registry. If a distillation reveals that an existing section (e.g. §5.22) should be amended or cross-referenced, note it in the interpretation prose as: `> Cross-ref: §5.22 — [reason]`. Only genuinely NEW theoretical candidates get registry entries, always numbered from `next_number`.
 
 2. **Open question resolution check**: Scan `[interpretations_dir]/*.md` for `## Open Questions` sections (read only the OQ bullet lines, not entire files). For each prior open question, check if the current source's concepts provide an answer. If yes, note in the current interpretation: `> Resolves: [Source_Label] OQ: "[question text]"`. Best-effort — flag candidates, user confirms during MANDATORY REVIEW.
 
 3. **Existing mapping awareness**: If `alpha/index.json` exists, read the sources summary to see which concepts are already mapped per source. Prevents duplicate mappings and surfaces opportunities to strengthen existing weak mappings. If a concept from the current source maps to the same project element as a prior source, note it as a convergence (not a redundancy).
+
+**Re-pass mode** (invoked via `/distill --repass`):
+
+When running in re-pass mode, analyze operates differently:
+
+1. Read the repass queue entry for the target source from the manifest
+2. Load ONLY the specified concepts from the existing distillation (via `distill_retrieve.py --concept [key]`)
+3. Re-run Pass 4 ONLY for those concepts, considering the triggering sources' perspectives:
+   - Read the triggering sources' interpretation files to understand what new connections prompted the re-pass
+   - Check if the original concept mappings still hold or need updating
+   - Look for new convergence edges missed in the original pass
+4. Compare new mappings to old:
+   - If mappings changed: update the interpretation file's concept table and integration points
+   - If new cw edges identified: note them for the integrate step
+   - If no changes: mark as converged
+5. Increment the source's iteration counter in the manifest
+6. Iteration cap: 3 per source. If iteration >= 3, remove from queue regardless of changes.
 
 **Pass 5 — Style**: Characterize the source's register, tone, and density. Always runs (style is source-intrinsic, not project-dependent). Record in the distillation header:
 - **Register**: analytic philosophy / continental phenomenology / empirical social science / formal-mathematical / practitioner-applied / mixed
