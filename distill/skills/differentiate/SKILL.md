@@ -11,6 +11,12 @@ One-time project setup that generates a project-specific distillation skill at `
 
 ## Step 0: Check for Project Skill
 
+**Project root discovery**: Resolve `<repo>` using the parent skill's Project Discovery
+path (CWD → git root → sibling dirs → parent dir). If running standalone, perform the
+same search: check CWD first, then `git rev-parse --show-toplevel`, then `[CWD]/*/.claude/skills/distill/SKILL.md`,
+then `[CWD]/../.claude/skills/distill/SKILL.md`. The first directory containing
+`.claude/skills/distill/SKILL.md` becomes `<repo>` for all subsequent steps.
+
 Check if `<repo>/.claude/skills/distill/SKILL.md` exists:
 
 1. **If it exists**: Read the project skill's Configuration section (project name, map type, paths). Count distillations: glob `[distillation_dir]/*.md` but **exclude** `_v[N]_` suffixed files (archived redistillations) from the count — those are historical versions, not current distillations. **MANDATORY POPUP**: You MUST present this choice via `AskUserQuestion`. Do NOT auto-select. Wait for the user's response.
@@ -75,7 +81,7 @@ python -c "import pdfplumber; print(f'pdfplumber {pdfplumber.__version__}')"
 python -c "from PIL import Image; import PIL; print(f'Pillow {PIL.__version__}')"
 
 # Check Docling
-python -c "from docling.document_converter import DocumentConverter; from importlib.metadata import version; print(f'Docling {version(\"docling\")}')"
+python -c "from importlib.metadata import version; print(f'Docling {version(\"docling\")}')"
 
 # Check Marker (lightweight check -- do NOT import converters, which trigger heavy model loading)
 python -c "import marker; from importlib.metadata import version; print(f'Marker {version(\"marker-pdf\")}')"

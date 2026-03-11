@@ -197,10 +197,11 @@ python ${CLAUDE_PLUGIN_ROOT}/scripts/distill_ocr.py dummy --scan /dev/null --out
 ```
 Output: `PROBE: <backend> <version>` (e.g., `PROBE: rapidocr 3.0.1`) or `PROBE: no_backend` (exit code 2). Takes ~2 seconds. **Cache the result** in the project tooling profile as `ocr_backend: <backend> <version>`. On subsequent distillations, skip the probe if the cached entry exists — the backend doesn't change between sessions. If the cached backend fails at runtime, clear the cache and re-probe.
 
-**Check each needed tool's status** in the project tooling profile:
-- `installed`: proceed (no popup needed)
-- `demand-install`: add to batch install list
-- `never`: skip (use fallback route)
+**Verify each needed tool at runtime** before consulting the profile. For each tool in the manifest, run a quick import check (`python -c "from importlib.metadata import version; print(version('package-name'))"` — takes <1s per tool). This catches tools installed since the profile was last written.
+
+- **Installed at runtime**: proceed (no popup needed). If the profile says `demand-install`, update it to `installed: <version>` in the project skill's Tooling Profile section.
+- **Not installed AND profile says `demand-install`**: add to batch install list.
+- **Profile says `never`**: skip (use fallback route). Do NOT runtime-check these.
 
 **If batch install list is non-empty**, present a SINGLE **⚠ MANDATORY POPUP** with all needed tools:
 
@@ -504,7 +505,9 @@ For non-PDF sources, populate only the relevant fields (e.g., web sources: `sour
 
 ## Demand-Install Protocol
 
-When a specialist tool is needed but not installed, and its tooling profile status is `demand-install`:
+**Runtime pre-check** (mandatory): Before triggering any install popup, verify the tool is actually missing by running `python -c "from importlib.metadata import version; print(version('PACKAGE'))"` where PACKAGE is the pip package name (e.g., `pdfplumber`, `docling`, `marker-pdf`, `yt-dlp`, `faster-whisper`). If the tool IS installed, update the tooling profile and proceed — do NOT show the popup. This prevents stale profile entries from re-asking about already-installed tools across sessions.
+
+When a specialist tool is needed but not installed (confirmed by runtime check), and its tooling profile status is `demand-install`:
 
 **⚠ MANDATORY POPUP**: You MUST use `AskUserQuestion` to offer tool installation. Do NOT install without explicit user consent. Do NOT skip — present the offer and wait.
 

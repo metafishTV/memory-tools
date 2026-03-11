@@ -393,11 +393,36 @@ Use the custom schema defined during differentiation (loaded from `custom_schema
 
 **Guard**: If `pure_mode = true`, no interpretation file was written — skip the review below entirely and proceed directly to Analysis Stats Output.
 
-**⚠ MANDATORY REVIEW**: After writing the interpretation file, present a **plain text summary** to the user:
-- Number of concepts mapped and their relationship types (confirms/extends/challenges/novel)
-- Key integration points identified
-- Any flags or open questions
-- The output file path so the user can open and review the full document
+**⚠ MANDATORY REVIEW**: After writing the interpretation file, present the interpretation summary as **plain text** using this format:
+
+```
+### Interpretation Summary — [Source Label]
+
+| Source Concept | → | Project Element | Type |
+|---|---|---|---|
+| [source term] | → | [project mapping] | confirms |
+| [source term] | → | [project mapping] | extends |
+| [source term] | → | *new mechanism* | **novel** |
+
+**Forward Notes**: [N] candidates (§[range])
+- §[N]: [one-line description]
+- §[N]: [one-line description]
+
+**Open Questions**: [N] flagged for review
+- [one-line question]
+
+**Files**
+- Distillation: `[relative path]`
+- Interpretation: `[relative path]`
+```
+
+**Formatting rules**:
+- The concept mapping table is the centerpiece — one row per mapping, sortable by Type column at a glance
+- Bold **novel** entries in the Type column (these are the most actionable)
+- Forward notes get one line each (not comma-separated)
+- Open questions get one line each (not a count alone)
+- File paths last (least urgent information)
+- No preamble ("Here's the summary...") — lead with the heading
 
 Then call `AskUserQuestion` with ONLY: "Looks good — proceed with integration" / "I have feedback." The popup is the decision; the summary is the plain text above. Do NOT proceed to integration until the user has responded. Do NOT assume acknowledgment from silence. They should see and review the project reading before post-updates fire.
 

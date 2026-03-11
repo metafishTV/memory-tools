@@ -87,7 +87,6 @@ TOOL_CHECKS = [
         'category': 'Highly recommended',
         'role': 'layout + OCR + complex tables',
         'check': [PYTHON, '-c',
-                  "from docling.document_converter import DocumentConverter; "
                   "from importlib.metadata import version; "
                   "print(f'Docling {version(\"docling\")}')"],
         'install': 'pip install docling',

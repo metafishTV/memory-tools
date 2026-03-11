@@ -2,6 +2,14 @@
 
 All notable changes to buffer are documented here.
 
+## [distill 1.11.0] - 2026-03-11
+
+### Config Discovery + Runtime Install Verification + Multi-Source
+- **Project root discovery** — Dispatcher and differentiate now search CWD → git root → sibling directories → parent directory for `.claude/skills/distill/SKILL.md`. Fixes the root cause of "started questionnaire from scratch" when CWD differs from project root. All path resolution uses discovered `project_root`.
+- **Lightweight tool detection** — Docling check in `distill_setup.py` changed from heavy `DocumentConverter` import to `importlib.metadata.version()`. Prevents false "not installed" when the package is present but a transitive dependency fails to load.
+- **Extract runtime pre-check** — Phase 1.7 Tool Manifest and Demand-Install Protocol now verify tool installation at runtime (`importlib.metadata`) before consulting the project tooling profile. If a tool is installed but the profile says `demand-install`, the profile is updated silently. Eliminates false install popups across sessions.
+- **Multi-source handling** — Dispatcher now detects multiple source inputs and prompts: "Series/sequence" (ordered, linked, compound label) vs "Independent items" (batch). Series mode offers combined vs separate transcript options. Prevents false cross-referencing between unrelated sources.
+
 ## [distill 1.10.0] - 2026-03-11
 
 ### Distillation Fidelity + Efficiency Fixes

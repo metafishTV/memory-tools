@@ -20,9 +20,22 @@ After calling `AskUserQuestion`, you MUST stop generating. Do not continue to th
 
 Distill a source document into structured reference knowledge.
 
+## Project Discovery
+
+Before routing, resolve the **project root** — the directory containing `.claude/skills/distill/SKILL.md`. Search in this order (stop at first hit):
+
+1. **CWD**: check `[CWD]/.claude/skills/distill/SKILL.md`
+2. **Git root**: run `git rev-parse --show-toplevel 2>/dev/null` — if it returns a directory different from CWD, check there
+3. **Sibling directories**: check `[CWD]/*/. claude/skills/distill/SKILL.md` (one level deep — catches `repo-name/` sitting next to CWD)
+4. **Parent directory**: check `[CWD]/../.claude/skills/distill/SKILL.md`
+
+If found, set `project_root` to the directory containing `.claude/`. All subsequent path resolution (distillation_dir, figures_dir, etc.) is relative to `project_root`, NOT CWD.
+
+If not found in any location, this is a first-time project — proceed to step 2.
+
 ## Routing
 
-1. **Check for project config** (silent): look for `.claude/skills/distill/SKILL.md` in the project directory.
+1. **Check for project config** (silent): use the Project Discovery path above to locate `.claude/skills/distill/SKILL.md`.
 
 2. **If no project config exists**:
    - This is a first-time distillation for this project.
@@ -48,6 +61,23 @@ Distill a source document into structured reference knowledge.
 ## Fast Path
 
 If the user provides a source path directly (e.g., `/distill docs/references/Author_Title_2024.pdf`), skip the greeting and go straight to step 3 (or step 2 if no project config).
+
+## Multi-Source Handling
+
+If the user provides **multiple sources** (multiple URLs, files, or a mix):
+
+**⚠ MANDATORY POPUP**: Present via `AskUserQuestion`:
+
+- **"Series / sequence"** — These are parts of a whole (lecture series, book chapters, essay sequence). Process in order. Later items may reference earlier ones. Use a parent label (e.g., `Author_SeriesName_Year`) with part suffixes (`_Part01`, `_Part02`). Single compound INDEX.md entry.
+- **"Independent items (batch)"** — Unrelated sources. Process each independently with its own label, distillation, and INDEX.md entry.
+
+**⚠ FULL STOP** — see ENFORCEMENT RULE. Wait for user response.
+
+For **series**: also ask whether the user wants:
+- Combined transcript/text (single `.md` with part headings) — better for tracing cross-part arguments
+- Separate files per part (individual `.md` files) — better for targeted retrieval
+
+For **independent batch**: process each source through the full pipeline sequentially. No cross-referencing between items.
 
 ## Arguments
 
