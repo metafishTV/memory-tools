@@ -10,6 +10,11 @@ All notable changes to buffer are documented here.
 - **Upward promotion** (anopressive channel) — `alpha-health` now reports concepts with 3+ sigma hits as promotion candidates. `/buffer:off` conservation step includes upward promotion check: frequently activated concepts in cold/warm can be promoted to `concept_map_digest.flagged` for immediate access. Closes the anapressive-anopressive loop (conservation pushes down, promotion pulls up based on operational relevance).
 - **Adjacency cache** — `alpha-reinforce` now writes `.cw_adjacency` (compact adjacency list + concept names) alongside index.json. Enables sigma hook spreading activation and incremental W updates without loading full index.
 
+## [distill 1.12.1] - 2026-03-11
+
+### Plugin Cache Fix
+- **No code changes** — version bump only. The 1.12.0 cache sync missed `.claude-plugin/plugin.json` (glob `*` skips hidden directories), causing distill skills to not appear in Claude Desktop's autocomplete. Updating to 1.12.1 forces a clean re-cache.
+
 ## [distill 1.12.0] - 2026-03-11
 
 ### Cross-Distillation Intelligence Layer
