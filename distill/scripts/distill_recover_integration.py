@@ -144,10 +144,11 @@ def parse_integration_points(text: str) -> list[dict]:
                 'description': desc.strip(),
             })
         # Also extract cross-source mappings: Source × Source: description
+        # Use only × (U+00D7 multiplication sign), NOT lowercase 'x' which
+        # false-matches in words like "matrix", "taxonomy", "praxis".
         cross = re.findall(
-            r'[-*]\s+(.+?)\s*[×x]\s*(.+?):\s*(.+?)(?:\n|$)',
-            section,
-            re.IGNORECASE
+            r'[-*]\s+(.+?)\s*×\s*(.+?):\s*(.+?)(?:\n|$)',
+            section
         )
         for src1, src2, desc in cross:
             points.append({
