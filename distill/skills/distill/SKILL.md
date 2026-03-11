@@ -55,7 +55,15 @@ If not found in any location, this is a first-time project — proceed to step 2
 
 4. **Check for `--recover` flag**: If the user invoked `/distill --recover`, skip the normal pipeline and route directly to `distill:integrate` in Recovery Mode (Steps R1–R4). Do not invoke extract or analyze.
 
-5. **Run the pipeline** in sequence, passing config context forward:
+5. **Check for `--notes-health` flag**: If the user invoked `/distill --notes-health`, skip the normal pipeline and run forward note health analysis:
+   ```bash
+   python [plugin-scripts]/distill_forward_notes.py health \
+     --notes [repo]/.claude/skills/distill/forward_notes.json \
+     --alpha-dir .claude/buffer/alpha
+   ```
+   Present the report to the user. If consolidation clusters are found, offer: "Would you like to consolidate any of these clusters? Use `--merge` to specify notes."
+
+6. **Run the pipeline** in sequence, passing config context forward:
    a. Invoke `distill:extract` — extracts raw content from the source document
    b. Invoke `distill:analyze` — runs analytic passes and produces the distilled output
    c. Invoke `distill:integrate` — updates project indexes, buffer, and reference bin
@@ -86,3 +94,5 @@ For **independent batch**: process each source through the full pipeline sequent
 The source path can be provided as an argument or the user will be asked for it during the extract step.
 
 **`--recover`**: Skip the normal distillation pipeline and run **integration recovery** instead. This scans all interpretation files, detects orphaned sources (distilled but never integrated into the alpha bin), and backfills missing entries. Routes directly to the integrate skill's Recovery Mode (Steps R1–R4). Requires buffer plugin and alpha bin to exist.
+
+**`--notes-health`**: Run forward note health analysis without a full distillation. Scans the forward note registry for consolidation clusters (related notes that may warrant merging), supersession candidates (notes that reference or duplicate others), and source density. Outputs a diagnostic report. Optionally cross-references against alpha concept_index for semantic similarity.

@@ -2,6 +2,14 @@
 
 All notable changes to buffer are documented here.
 
+## [distill 1.13.0] - 2026-03-11
+
+### Forward Note Consolidation
+- **Forward note health analysis** — New `distill_forward_notes.py` script scans `forward_notes.json` for consolidation clusters (related notes via Jaccard + alpha concept overlap), supersession candidates (self-identified redundancy, cross-references, implemented status), and source density. Invoke via `/distill --notes-health` or directly.
+- **Consolidation** — `consolidate` command merges specified notes: surviving note gets updated description, absorbed notes get `status: "merged_into"` with pointer. Always user-reviewed — never auto-consolidates.
+- **Integrate step enhancement** — Step 4c added to integrate SKILL.md: after writing new forward note candidates, runs similarity check against existing notes. Flags potential consolidation targets in the integration report. Status lifecycle extended with `merged_into`.
+- **check-new command** — Lightweight similarity check for integrate step: compares a new candidate description against all existing notes, returns matches above threshold. Uses both direct word overlap (Jaccard) and concept-mediated overlap (alpha concept_index cross-reference).
+
 ## [buffer 2.3.0] - 2026-03-11
 
 ### Kirsanov Intelligence Layer (Predictive Coding + Resonator Dynamics)

@@ -269,7 +269,41 @@ For each `§5.NN` reference in the interpretation file, add an entry if `5.NN` i
 
 After adding all candidates, set `next_number` to `max(existing next_number, highest_seen_number + 1)`.
 
-Status lifecycle: `candidate` → `accepted` → `implemented` → `superseded`. Integration only writes `candidate`. Other transitions are manual.
+Status lifecycle: `candidate` → `accepted` → `implemented` → `superseded` → `merged_into`. Integration only writes `candidate`. Other transitions are manual or via consolidation.
+
+### Step 4c: Forward Note Consolidation Check
+
+**Guard**: Only run if new forward note candidates were written in Step 4b.
+
+After writing new candidates, check each against existing notes for potential consolidation. Uses `distill_forward_notes.py check-new` for similarity detection:
+
+```bash
+python [plugin-scripts]/distill_forward_notes.py check-new \
+  --notes [repo]/.claude/skills/distill/forward_notes.json \
+  --description "[new candidate description]" \
+  --alpha-dir .claude/buffer/alpha \
+  --threshold 0.2
+```
+
+**If matches found** (similarity >= 0.2): Append a one-line note to the integration report:
+
+```
+Forward notes: N candidates registered. ⚠ §5.XX may relate to §5.YY (similarity: 0.35) — review with /distill --notes-health
+```
+
+**Do NOT auto-consolidate.** Only flag for user review. Consolidation is always a manual decision via:
+
+```bash
+python [plugin-scripts]/distill_forward_notes.py consolidate \
+  --notes [repo]/.claude/skills/distill/forward_notes.json \
+  --merge 5.XX 5.YY --into 5.XX --dry-run
+```
+
+**Periodic health check**: At integration end (Step 6), if the registry has 20+ notes, append:
+
+```
+Forward notes health: run `python distill_forward_notes.py health --notes [path] --alpha-dir [path]` for cluster analysis.
+```
 
 ### Step 5: Remove Marker and Validate
 
