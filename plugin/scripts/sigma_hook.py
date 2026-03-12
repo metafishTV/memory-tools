@@ -474,9 +474,19 @@ def format_hot_hits(hits):
 # CASCADE LEVEL 2: Alpha concept matching (fallthrough)
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Directional asymmetry constants (Mangan & Alon FFL sign-sensitivity)
+# ---------------------------------------------------------------------------
+
+ON_STEP_THRESHOLD = 0.2       # below this regime activation = on-step (new concept)
+PERSISTENCE_PENALTY = 0.5     # score multiplier for on-step concepts
+PULSE_MULTIPLIER = 1.5        # boost for strong first-contact
+PULSE_SCORE_GATE = 1.3        # first-contact must score >= this * threshold for pulse
+
+
 def match_alpha_concepts(keywords, concept_index, suppress_list,
                           idf_weights, threshold, score_exact=3,
-                          min_score=2.0, max_inject=3):
+                          min_score=2.0, max_inject=3, regime=None):
     """Match keywords against alpha concept_index keys with IDF weighting.
 
     For each concept, sums the IDF weight of matching keywords.
@@ -484,6 +494,13 @@ def match_alpha_concepts(keywords, concept_index, suppress_list,
     Substring match gets IDF weight * SCORE_SUBSTRING.
     Requires total weighted score >= min_score AND >= threshold.
     Filters suppressed concepts.
+
+    Directional asymmetry (when regime provided):
+      - First contact (activation == 0, score >= 1.3x threshold): PULSE (1.5x)
+      - On-step (activation < 0.2): PERSISTENCE PENALTY (0.5x)
+      - Established (activation >= 0.2): no modification
+      - Off-step: handled by decay in update_regime, no code needed here
+
     Returns list of (concept_key, work_ids, weighted_score) sorted desc.
     """
     if not keywords or not concept_index:
@@ -491,6 +508,7 @@ def match_alpha_concepts(keywords, concept_index, suppress_list,
 
     effective_threshold = max(threshold, min_score)
     scores = {}
+    regime_activations = (regime or {}).get('activations', {})
 
     for concept_key, work_ids in concept_index.items():
         if concept_key == '?':
@@ -509,6 +527,18 @@ def match_alpha_concepts(keywords, concept_index, suppress_list,
                 weighted_score += w * score_exact
             elif kw in concept_lower or concept_lower in kw:
                 weighted_score += w * SCORE_SUBSTRING
+
+        # Directional asymmetry: apply regime-dependent modulation
+        if regime is not None and weighted_score > 0:
+            activation = regime_activations.get(concept_key, 0.0)
+            if activation == 0.0:
+                # First contact — pulse or persistence penalty
+                if weighted_score >= PULSE_SCORE_GATE * effective_threshold:
+                    weighted_score *= PULSE_MULTIPLIER  # strong first contact
+                else:
+                    weighted_score *= PERSISTENCE_PENALTY  # weak first contact
+            elif activation < ON_STEP_THRESHOLD:
+                weighted_score *= PERSISTENCE_PENALTY  # on-step, not yet established
 
         if weighted_score >= effective_threshold:
             scores[concept_key] = (work_ids, weighted_score)
@@ -747,6 +777,121 @@ def record_grid_adjustment(buffer_dir, cell_key, concept_ids, hit=True):
         pass
 
 
+# ---------------------------------------------------------------------------
+# Regime accumulator — session-level concept belief (Tafazoli task belief)
+# ---------------------------------------------------------------------------
+
+REGIME_DECAY = 0.85         # per-prompt decay (half-life ~4.3 prompts)
+REGIME_BOOST = 0.3          # activation boost per matched concept
+
+def load_regime(buffer_dir):
+    """Load .sigma_regime state file. Returns default if absent."""
+    regime_path = os.path.join(buffer_dir, '.sigma_regime')
+    data = read_json(regime_path)
+    if data and isinstance(data, dict) and 'activations' in data:
+        return data
+    return {
+        'activations': {},
+        '_entropy': 0.0,
+        '_prompt_count': 0,
+        '_prev_activations': {},
+        '_dkl': 0.0,
+        '_dkl_cumulative': 0.0,
+    }
+
+
+def _compute_entropy(activations):
+    """Shannon entropy H = -sum(p_i * log2(p_i)) over activation distribution."""
+    import math
+    if not activations:
+        return 0.0
+    total = sum(activations.values())
+    if total <= 0:
+        return 0.0
+    h = 0.0
+    for v in activations.values():
+        if v > 0:
+            p = v / total
+            h -= p * math.log2(p)
+    return h
+
+
+def _compute_dkl(current, previous):
+    """KL divergence D_KL(P_current || P_previous).
+
+    SWM becoming-rate metric. Epsilon-smoothed to handle zero entries.
+    Returns float >= 0.0.
+    """
+    import math
+    if not current:
+        return 0.0
+    # Union of all keys
+    all_keys = set(current) | set(previous or {})
+    if not all_keys:
+        return 0.0
+    epsilon = 1e-10
+    # Normalize to distributions
+    total_c = sum(current.values()) or 1.0
+    total_p = sum((previous or {}).values()) or 1.0
+    dkl = 0.0
+    for k in all_keys:
+        p = (current.get(k, 0.0) / total_c) + epsilon
+        q = ((previous or {}).get(k, 0.0) / total_p) + epsilon
+        dkl += p * math.log(p / q)
+    return max(0.0, dkl)
+
+
+def update_regime(buffer_dir, regime, matched_concept_keys, decay_rate=REGIME_DECAY):
+    """Update regime accumulator: boost matched, decay all, recompute entropy + D_KL."""
+    activations = regime.get('activations', {})
+    prev_activations = dict(activations)  # snapshot for D_KL
+
+    # Decay all existing activations
+    for k in list(activations):
+        activations[k] *= decay_rate
+        if activations[k] < 0.01:
+            del activations[k]
+
+    # Boost matched concepts
+    for key in matched_concept_keys:
+        activations[key] = min(1.0, activations.get(key, 0.0) + REGIME_BOOST)
+
+    regime['activations'] = activations
+    regime['_prev_activations'] = prev_activations
+    regime['_entropy'] = _compute_entropy(activations)
+    regime['_prompt_count'] = regime.get('_prompt_count', 0) + 1
+    regime['_dkl'] = _compute_dkl(activations, prev_activations)
+    regime['_dkl_cumulative'] = regime.get('_dkl_cumulative', 0.0) + regime['_dkl']
+
+    # Write back
+    regime_path = os.path.join(buffer_dir, '.sigma_regime')
+    try:
+        with open(regime_path, 'w', encoding='utf-8') as f:
+            json.dump(regime, f, indent=2)
+    except OSError:
+        pass
+
+    return regime
+
+
+def regime_threshold_modifier(regime):
+    """Entropy-based threshold modifier.
+
+    Low entropy (focused session) → lower threshold (0.85) — established topics fire easier.
+    High entropy (exploratory) → higher threshold (1.15) — require stronger evidence.
+    Medium → no modification (1.0).
+    Clamped to [0.8, 1.2].
+    """
+    h = regime.get('_entropy', 0.0)
+    if h < 1.5:
+        modifier = 0.85
+    elif h >= 3.0:
+        modifier = 1.15
+    else:
+        modifier = 1.0
+    return max(0.8, min(1.2, modifier))
+
+
 def record_prediction_error(buffer_dir, keywords, matched_concepts, grid_hit):
     """Record prediction errors for predictive coding feedback loop.
 
@@ -879,6 +1024,150 @@ def update_wholeness(buffer_dir, new_concept_ids, adjacency, edge_count=0):
             json.dump(state, f, indent=2)
     except OSError:
         pass
+
+
+def apply_cw_boost(scores, adj_data, effective_threshold,
+                   saturation_factor=1.3, eligibility_band=0.15,
+                   max_cascade=5):
+    """CW-graph neighbor boost + rich-get-split splash.
+
+    Three phases:
+    1. Neighbor boost: above-threshold concepts uplift cw-neighbors by 30%
+    2. Saturation check: concepts exceeding saturation_factor * threshold
+    3. Splash cascade: excess redistributed to highest sub-threshold concept
+       within eligibility_band of threshold. Max max_cascade iterations.
+
+    Args:
+        scores: dict of {concept_key: (work_ids, weighted_score)}
+        adj_data: parsed .cw_adjacency with 'adjacency' and 'concepts' dicts
+        effective_threshold: the active scoring threshold
+        saturation_factor: multiplier for saturation cap (default 1.3)
+        eligibility_band: fraction of threshold for splash eligibility (0.15 = 85-100%)
+        max_cascade: maximum splash iterations
+
+    Returns:
+        Modified scores dict (mutated in place and returned).
+    """
+    if not adj_data or not scores:
+        return scores
+
+    adjacency = adj_data.get('adjacency', {})
+    concepts_lookup = adj_data.get('concepts', {})
+    if not adjacency:
+        return scores
+
+    # Build reverse lookup: concept_key → w_id (for adjacency, which is keyed by w_id)
+    key_to_wid = {}
+    for wid, cname in concepts_lookup.items():
+        key_to_wid[cname] = wid
+
+    # Phase 1: Neighbor boost (30% uplift)
+    boost_targets = {}
+    for concept_key, (work_ids, wscore) in list(scores.items()):
+        if wscore < effective_threshold:
+            continue
+        wid = key_to_wid.get(concept_key)
+        if not wid:
+            continue
+        neighbors = adjacency.get(wid, [])
+        for neighbor_wid in neighbors:
+            neighbor_name = concepts_lookup.get(neighbor_wid)
+            if not neighbor_name or neighbor_name == concept_key:
+                continue
+            boost_targets[neighbor_name] = (
+                boost_targets.get(neighbor_name, 0.0) + wscore * 0.3
+            )
+
+    # Apply boosts to existing scores or create new entries
+    for concept_key, boost_amount in boost_targets.items():
+        if concept_key in scores:
+            work_ids, current = scores[concept_key]
+            scores[concept_key] = (work_ids, current + boost_amount)
+        # Don't create new entries — only boost concepts already in the scoring pool
+
+    # Phase 2 & 3: Saturation cap + splash cascade
+    saturation_cap = saturation_factor * effective_threshold
+    eligibility_floor = effective_threshold * (1.0 - eligibility_band)
+
+    for _ in range(max_cascade):
+        # Find saturated concept with highest excess
+        saturated = None
+        max_excess = 0.0
+        for concept_key, (work_ids, wscore) in scores.items():
+            excess = wscore - saturation_cap
+            if excess > max_excess:
+                max_excess = excess
+                saturated = concept_key
+
+        if saturated is None:
+            break
+
+        # Find best splash target: highest-scoring sub-threshold concept in band
+        best_target = None
+        best_target_score = 0.0
+        for concept_key, (work_ids, wscore) in scores.items():
+            if concept_key == saturated:
+                continue
+            if eligibility_floor <= wscore < effective_threshold:
+                if wscore > best_target_score:
+                    best_target = concept_key
+                    best_target_score = wscore
+
+        if best_target is None:
+            # No eligible target — just cap the saturated concept
+            work_ids, wscore = scores[saturated]
+            scores[saturated] = (work_ids, saturation_cap)
+            break
+
+        # Splash: cap saturated, boost target
+        work_ids_sat, wscore_sat = scores[saturated]
+        scores[saturated] = (work_ids_sat, saturation_cap)
+        work_ids_tgt, wscore_tgt = scores[best_target]
+        scores[best_target] = (work_ids_tgt, wscore_tgt + max_excess)
+
+    return scores
+
+
+def check_ambiguity_signal(keywords, concept_index, suppress_list,
+                           idf_weights, threshold, score_exact=3):
+    """Check for near-threshold concepts when no matches fired.
+
+    Scans for the highest-scoring concept within 90-100% of threshold.
+    Returns diagnostic string or None.
+    ~10 tokens, only when normal injection would be empty.
+    """
+    if not keywords or not concept_index:
+        return None
+
+    effective_threshold = threshold
+    best_key = None
+    best_score = 0.0
+
+    for concept_key, work_ids in concept_index.items():
+        if concept_key == '?':
+            continue
+        if is_suppressed(concept_key, suppress_list):
+            continue
+
+        concept_lower = concept_key.lower()
+        weighted_score = 0.0
+        for kw in keywords:
+            w = idf_weights.get(kw, 0.0)
+            if w == 0.0:
+                continue
+            if kw == concept_lower:
+                weighted_score += w * score_exact
+            elif kw in concept_lower or concept_lower in kw:
+                weighted_score += w * SCORE_SUBSTRING
+
+        if weighted_score > best_score:
+            best_score = weighted_score
+            best_key = concept_key
+
+    if best_key and best_score >= 0.9 * effective_threshold:
+        return f"sigma: near {best_key} \u2014 consider /buffer-on"
+
+    return None
 
 
 def update_continuous_scores(buffer_dir, concept_ids, keywords, concept_index):
@@ -1095,9 +1384,17 @@ def main():
     score_exact = dynamic_score_exact(corpus_size)
     min_score = dynamic_min_score(corpus_size)
 
+    # Load CW adjacency data (needed for boost pass after alpha matching)
+    adj_path = os.path.join(buffer_dir, '.cw_adjacency')
+    adj_data = read_json(adj_path)
+
     # GATE 3: Compute IDF weights + scaling threshold
     idf_weights = compute_idf_weights(keywords, concept_index)
     threshold = confidence_threshold(len(keywords))
+
+    # Load regime accumulator and apply entropy-based threshold modifier
+    regime = load_regime(buffer_dir)
+    threshold *= regime_threshold_modifier(regime)
 
     # -----------------------------------------------------------------------
     # LEVEL 1: Hot layer check (cheapest — skipped if buffer already loaded)
@@ -1124,12 +1421,61 @@ def main():
 
     concept_matches = match_alpha_concepts(
         keywords, concept_index, suppress_list, idf_weights, threshold,
-        score_exact=score_exact, min_score=min_score, max_inject=max_inject)
+        score_exact=score_exact, min_score=min_score, max_inject=max_inject,
+        regime=regime)
+
+    # CW-boost pass: uplift neighbors of matched concepts, splash saturation
+    if concept_matches and adj_data:
+        # Build scores dict for boost pass
+        boost_scores = {
+            key: (ids, sc) for key, ids, sc in concept_matches
+        }
+        # Also include near-threshold concepts for splash targets
+        effective_threshold = max(threshold, min_score)
+        for concept_key, work_ids in concept_index.items():
+            if concept_key == '?' or concept_key in boost_scores:
+                continue
+            if is_suppressed(concept_key, suppress_list):
+                continue
+            concept_lower = concept_key.lower()
+            wscore = 0.0
+            for kw in keywords:
+                w = idf_weights.get(kw, 0.0)
+                if w == 0.0:
+                    continue
+                if kw == concept_lower:
+                    wscore += w * score_exact
+                elif kw in concept_lower or concept_lower in kw:
+                    wscore += w * SCORE_SUBSTRING
+            # Only include near-threshold concepts (splash candidates)
+            if wscore >= effective_threshold * 0.85:
+                boost_scores[concept_key] = (work_ids, wscore)
+
+        boost_scores = apply_cw_boost(boost_scores, adj_data, effective_threshold)
+
+        # Re-extract matches from boosted scores (re-rank, re-slice)
+        ranked = sorted(boost_scores.items(), key=lambda x: x[1][1], reverse=True)
+        concept_matches = [
+            (key, ids, sc) for key, (ids, sc) in ranked
+            if sc >= effective_threshold
+        ][:max_inject]
 
     # Prediction error tracking (Kirsanov predictive coding)
     record_prediction_error(buffer_dir, keywords, concept_matches, None)
 
+    # Update regime accumulator with matched concept keys
+    matched_keys = [key for key, _, _ in concept_matches]
+    update_regime(buffer_dir, regime, matched_keys)
+
     if not concept_matches:
+        # Ambiguity signal: near-threshold diagnostic
+        ambiguity = check_ambiguity_signal(
+            keywords, concept_index, suppress_list, idf_weights,
+            max(threshold, min_score), score_exact=score_exact)
+        if ambiguity:
+            emit(_with_resolution(
+                {"suppressOutput": True, "systemMessage": ambiguity},
+                resolution_due))
         emit(_with_resolution({}, resolution_due))
 
     injection = format_alpha_hits(concept_matches, sources_data)

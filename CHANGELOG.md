@@ -2,6 +2,17 @@
 
 All notable changes to buffer are documented here.
 
+## [buffer 2.4.0] - 2026-03-11
+
+### Regime Accumulator, Directional Asymmetry, CW-Boost, SWM Groundwork
+- **Session regime accumulator** — Sigma hook now maintains `.sigma_regime` state file tracking per-concept activation levels across the session. Shannon entropy H gauges session focus: low entropy (focused conversation) lowers the firing threshold, high entropy (exploratory) raises it. Decay rate 0.85 (half-life ~4.3 prompts). Inspired by Tafazoli et al.'s "task belief" signal in LPFC.
+- **Directional asymmetry** — On-step (concept entering conversation) gets persistence penalty (0.5x), requiring sustained mention to fire. Off-step (concept leaving) handled by natural decay — no special code. Inspired by Mangan & Alon's FFL sign-sensitive delay: coherent FFLs reject brief transients in one direction.
+- **Pulse generation** — Strong first-contact concepts (regime activation == 0, score >= 1.3x threshold) bypass persistence penalty and get 1.5x boost. Weak first contacts still face persistence detection. Models the incoherent FFL's pulse generation for novel strong signals.
+- **CW-graph neighbor boost** — When a concept scores above threshold, its convergence web neighbors get 30% of its score as uplift. Rich-get-split splash: concepts exceeding 1.3x threshold (saturation cap) redistribute excess to the highest sub-threshold concept within 15% eligibility band. Max 5 cascade iterations. Inspired by Wright et al.'s local synaptic coactivity.
+- **Ambiguity signal** — When no concepts match, scans for the highest-scoring concept within 90-100% of threshold. If found, emits `sigma: near [concept] — consider /buffer-on`. ~10 tokens, zero cost on the hot path.
+- **D_KL tracking (SWM groundwork)** — KL divergence between current and previous regime activation distributions computed on each update. Stored as `_dkl` (current) and `_dkl_cumulative` (session total) in `.sigma_regime`. Purely diagnostic — the SWM's "becoming rate" is now measurable.
+- **31 new tests** across 8 test classes (entropy, threshold modifier, regime update, directional asymmetry, CW-boost, ambiguity signal, D_KL, integration). Total: 125 tests, all passing.
+
 ## [distill 2.0.0] - 2026-03-11
 
 ### Stateful Knowledge System — Manifest, Quality Metrics, Graph Math, RIP Feedback
