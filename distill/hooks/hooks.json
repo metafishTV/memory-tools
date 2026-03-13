@@ -24,6 +24,14 @@
           "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/run_python\" \"${CLAUDE_PLUGIN_ROOT}/scripts/forward_notes_guard.py\"",
           "timeout": 3
         }]
+      },
+      {
+        "matcher": "Skill",
+        "hooks": [{
+          "type": "command",
+          "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/run_python\" \"${CLAUDE_PLUGIN_ROOT}/scripts/first_run_gate.py\"",
+          "timeout": 3
+        }]
       }
     ]
   }

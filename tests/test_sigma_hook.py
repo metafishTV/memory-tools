@@ -16,8 +16,8 @@ from sigma_hook import (
     record_grid_adjustment, update_continuous_scores,
     _compute_entropy, _compute_dkl, load_regime, update_regime,
     regime_threshold_modifier, apply_cw_boost, check_ambiguity_signal,
-    check_cooldown,
-    SCORE_SUBSTRING,
+    check_cooldown, detect_buffer_mode,
+    SCORE_SUBSTRING, LITE_MODES,
 )
 
 
@@ -1038,3 +1038,37 @@ class TestCheckCooldown:
         assert check_cooldown(buf) is True
         # Marker now exists
         assert os.path.exists(os.path.join(buf, '.sigma_last_fire'))
+
+
+# ---------------------------------------------------------------------------
+# Lite mode detection and gating
+# ---------------------------------------------------------------------------
+
+class TestDetectBufferMode:
+    """detect_buffer_mode reads buffer_mode from hot layer."""
+
+    def test_lite_mode_from_hot(self, tmp_path):
+        import json
+        hot = {"schema_version": 2, "buffer_mode": "lite"}
+        (tmp_path / 'handoff.json').write_text(json.dumps(hot), encoding='utf-8')
+        assert detect_buffer_mode(str(tmp_path)) == 'lite'
+
+    def test_full_mode_from_hot(self, tmp_path):
+        import json
+        hot = {"schema_version": 2, "buffer_mode": "full"}
+        (tmp_path / 'handoff.json').write_text(json.dumps(hot), encoding='utf-8')
+        assert detect_buffer_mode(str(tmp_path)) == 'full'
+
+    def test_defaults_to_lite_when_no_hot(self, tmp_path):
+        assert detect_buffer_mode(str(tmp_path)) == 'lite'
+
+    def test_defaults_to_lite_when_missing_field(self, tmp_path):
+        import json
+        hot = {"schema_version": 2}
+        (tmp_path / 'handoff.json').write_text(json.dumps(hot), encoding='utf-8')
+        assert detect_buffer_mode(str(tmp_path)) == 'lite'
+
+    def test_lite_modes_set(self):
+        assert 'lite' in LITE_MODES
+        assert 'minimal' in LITE_MODES
+        assert 'full' not in LITE_MODES

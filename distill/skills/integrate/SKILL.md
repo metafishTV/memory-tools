@@ -74,6 +74,23 @@ If no index file exists, create one with the header above and the first row. IND
 
 **Guard**: Verify `.claude/buffer/` exists with at least `handoff.json`. If missing, skip all buffer updates and log: "Buffer update skipped: no handoff buffer found." All buffer writes are **alpha-aware**: check for `alpha/index.json` first, fall back to warm-layer writes if alpha does not exist.
 
+#### Lite Alpha Upgrade (automatic)
+
+Before any alpha write, check if `alpha/index.json` has existing entries for this source with `"mode": "lite"`. If found:
+
+1. Inventory the lite entries (IDs, concept keys, source reference)
+2. The full distillation supersedes them — delete the lite entries:
+   ```bash
+   buffer_manager.py alpha-delete --buffer-dir .claude/buffer/ --id w:N [w:M ...]
+   ```
+3. Proceed to the standard alpha write below — new full entries replace the lite ones
+4. Log in warm `validation_log`:
+   ```json
+   {"check": "lite_upgrade", "status": "UPGRADED", "detail": "Source [label]: [N] lite entries replaced by [M] full entries", "session": "[date]"}
+   ```
+
+This is seamless — no user interaction needed. The full distillation naturally produces richer entries that subsume the lite sketch. The lite `source` reference was used to locate the original document; its job is done.
+
 #### Redistillation Alpha Handling (if redistill_mode is set)
 
 **Guard**: Only run this section if the extraction step passed a `redistill_mode` value (`archive`, `update`, or `delete`). If `redistill_mode` is `null` or absent, skip to the standard alpha write below.

@@ -287,6 +287,64 @@ Hot and warm layers for active work, decisions, threads, instance notes, and nat
 
 **Lite conservation:** When warm exceeds 500 lines, compress the oldest 30% by merging adjacent summaries into combined entries ("Sessions [date]–[date]: [merged summary]"), then migrate the compressed batch to cold. When cold exceeds 500 lines, trigger tower archival as normal.
 
+**Lite alpha (optional):**
+
+Lite mode can optionally create simple alpha entries via Claude's native document reading (no Python scripts, no distill plugin). These entries are stored in `.claude/buffer/alpha/` using the same directory structure as full alpha but with a `mode: lite` marker.
+
+Lite alpha entries:
+- Are created by Claude reading documents natively (Read tool for PDFs/images, WebFetch for URLs)
+- Store source **references** (paths/URLs), never copies
+- Contain 3-7 key concepts per document (quick sketch, not deep analysis)
+- Have no convergence web links (no `cw:` entries)
+- Are indexed in `alpha/index.json` with `"mode": "lite"` on the source entry
+
+Upgrade path: when the distill plugin is installed or buffer switches to full mode, lite entries are detected via the `mode: lite` marker. The system offers to re-distill through full five-pass analysis, locating sources via the stored reference.
+
+**Lite sigma hook behavior:**
+
+In lite mode, the sigma hook operates in hot-layer-only mode (checks hot layer keywords, skips everything else):
+- Hot layer matching (IDF-weighted keyword scoring) — active
+- Alpha concept matching — skipped (exits after hot layer check)
+- Relevance grid lookup — skipped (no grid in lite)
+- Regime accumulator — skipped (no `.sigma_regime`)
+- Prediction error tracking — skipped (no `.sigma_errors`)
+- CW-boost, spreading activation, continuous scores — skipped
+- Cooldown, suppress list, staleness gate — active (shared infrastructure)
+
+**Config file:**
+
+`.claude/buffer.config.yaml` is written during first-run setup. Machine-readable mode marker used by skills and tools (the sigma hook reads `buffer_mode` from the hot layer directly):
+```yaml
+mode: lite | full
+project: [project name]
+created: [YYYY-MM-DD]
+```
+
+### Upgrade Path: Lite → Full
+
+Lite mode is additive — upgrading to full never discards existing work.
+
+**Trigger points** (any of these can initiate upgrade):
+1. **`/buffer:on` Step 1c** — detects lite alpha entries when `buffer_mode` is `"full"`. Offers re-distill via AskUserQuestion.
+2. **`/distill:differentiate` Completion** — when first configuring distill, detects existing lite alpha entries and offers to re-distill them.
+3. **`/distill:integrate`** — when a full distillation runs on the same source as existing lite entries, automatically deletes the lite entries and replaces them with full analysis.
+
+**Source resolution** (for re-distillation):
+- `source` field contains a path → check if file exists at that path
+- `source` field contains a URL → fetch during distillation
+- `source` field contains "ask user" → prompt user for location
+
+**Entry upgrade** (in-place, no data loss):
+- Lite entries are deleted and replaced by full entries with new IDs
+- Full entries include convergence web links, marker references, and deep concept mappings
+- The lite `source` reference is preserved in the full entry's provenance
+
+**Mode switch** (buffer_mode lite → full):
+- Update `buffer_mode` in hot layer to `"full"`
+- Update `.claude/buffer.config.yaml` mode field
+- Full schema fields (`concept_map_digest`, etc.) are initialized empty
+- Existing lite hot/warm/cold data is preserved — full mode adds to it
+
 ### Full Mode
 
 The complete system. All schemas, all processes, all consolidation protocols as defined in this document. Concept maps, convergence webs, conservation, tower archival, provenance-aware consolidation.

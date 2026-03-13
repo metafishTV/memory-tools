@@ -67,6 +67,7 @@ MIN_WORD_LEN = 4           # skip short words (below this = noise)
 SCORE_SUBSTRING = 1        # substring match weight (baseline)
 SUBSTRING_WEIGHT = 0.25    # IDF contribution ratio for substring vs exact matches
 COOLDOWN_SECONDS = 30      # minimum seconds between sigma hook firings
+LITE_MODES = frozenset({'lite', 'minimal'})  # buffer modes that skip advanced features
 
 # ---------------------------------------------------------------------------
 # Dynamic scalars — functions of corpus size, prompt length, or both
@@ -185,6 +186,14 @@ def read_json(path):
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return None
+
+
+def detect_buffer_mode(buffer_dir):
+    """Read buffer_mode from hot layer. Returns 'lite', 'full', etc."""
+    hot = read_json(os.path.join(buffer_dir, 'handoff.json'))
+    if hot:
+        return hot.get('buffer_mode', 'lite')
+    return 'lite'
 
 
 def check_cooldown(buffer_dir, cooldown_seconds=COOLDOWN_SECONDS):
@@ -1357,15 +1366,22 @@ def main():
     if not buffer_dir:
         emit_empty()
 
+    # Detect buffer mode (lite skips regime, prediction error, grid, CW-boost)
+    mode = detect_buffer_mode(buffer_dir)
+    is_lite = mode in LITE_MODES
+
     # GATE -1: Cooldown — prevent rapid re-firing on idle/cycling
     if not check_cooldown(buffer_dir):
         emit_empty()
 
     # TICK COUNTER: Increment per-message counter for periodic resolution checks
-    _increment_tick(buffer_dir)
-    resolution_due = _check_resolution_due(buffer_dir)
+    # Lite mode skips ticks — no consumer (resolution checks are full-mode only)
+    if not is_lite:
+        _increment_tick(buffer_dir)
+    resolution_due = _check_resolution_due(buffer_dir) if not is_lite else False
 
     # GATE 0a: Post-compaction relay — inject buffer summary if marker present
+    # Runs in both lite and full mode (compact marker is shared infrastructure)
     check_compact_relay(buffer_dir, cwd)
 
     # GATE 0b: Distill-active — skip entirely during distillation
@@ -1378,9 +1394,10 @@ def main():
         emit(_with_resolution({}, resolution_due))
 
     # GATE 0c: Grid lookup — pre-computed relevance grid (O(1) lookup)
+    # Lite mode skips grid entirely (no relevance grid in lite).
     # If grid exists and produces a hit, emit directly (skip IDF scoring).
     # If no grid or no hit, fall through to existing behavior.
-    grid_result = try_grid_lookup(buffer_dir, keywords)
+    grid_result = None if is_lite else try_grid_lookup(buffer_dir, keywords)
     if grid_result is not None:
         injection, concept_ids = grid_result
         record_grid_hit(buffer_dir, concept_ids)
@@ -1398,35 +1415,45 @@ def main():
     # GATE 1: Load suppress list (zero cost if file absent)
     suppress_list = load_suppress_list(buffer_dir)
 
-    # Load alpha index if alpha bin exists (needed for IDF computation + Level 2 matching)
-    alpha_dir = os.path.join(buffer_dir, 'alpha')
-    if os.path.isdir(alpha_dir):
-        alpha_idx = read_json(os.path.join(alpha_dir, 'index.json'))
-        concept_index = alpha_idx.get('concept_index', {}) if alpha_idx else {}
-        sources_data = alpha_idx.get('sources', {}) if alpha_idx else {}
+    # Load alpha index, IDF weights, regime — full mode only.
+    # Lite mode uses empty defaults; exits at Level 2 before any alpha code runs.
+    if not is_lite:
+        alpha_dir = os.path.join(buffer_dir, 'alpha')
+        if os.path.isdir(alpha_dir):
+            alpha_idx = read_json(os.path.join(alpha_dir, 'index.json'))
+            concept_index = alpha_idx.get('concept_index', {}) if alpha_idx else {}
+            sources_data = alpha_idx.get('sources', {}) if alpha_idx else {}
+        else:
+            alpha_idx = None
+            concept_index = {}
+            sources_data = {}
+
+        # Compute dynamic scalars from corpus size and prompt size
+        corpus_size = len(concept_index)
+        word_count = len(user_prompt.split())
+        max_inject = dynamic_max_inject(word_count)
+        score_exact = dynamic_score_exact(corpus_size)
+        min_score = dynamic_min_score(corpus_size)
+
+        # Load CW adjacency data (needed for boost pass after alpha matching)
+        adj_path = os.path.join(buffer_dir, '.cw_adjacency')
+        adj_data = read_json(adj_path)
+
+        # GATE 3: Compute IDF weights + scaling threshold
+        idf_weights = compute_idf_weights(keywords, concept_index)
+        threshold = confidence_threshold(len(keywords))
+
+        # Load regime accumulator and apply entropy-based threshold modifier
+        regime = load_regime(buffer_dir)
+        if regime is not None:
+            threshold *= regime_threshold_modifier(regime)
     else:
-        alpha_idx = None
         concept_index = {}
         sources_data = {}
-
-    # Compute dynamic scalars from corpus size and prompt size
-    corpus_size = len(concept_index)
-    word_count = len(user_prompt.split())
-    max_inject = dynamic_max_inject(word_count)
-    score_exact = dynamic_score_exact(corpus_size)
-    min_score = dynamic_min_score(corpus_size)
-
-    # Load CW adjacency data (needed for boost pass after alpha matching)
-    adj_path = os.path.join(buffer_dir, '.cw_adjacency')
-    adj_data = read_json(adj_path)
-
-    # GATE 3: Compute IDF weights + scaling threshold
-    idf_weights = compute_idf_weights(keywords, concept_index)
-    threshold = confidence_threshold(len(keywords))
-
-    # Load regime accumulator and apply entropy-based threshold modifier
-    regime = load_regime(buffer_dir)
-    threshold *= regime_threshold_modifier(regime)
+        idf_weights = {}
+        threshold = 0.0
+        regime = None
+        adj_data = None
 
     # -----------------------------------------------------------------------
     # LEVEL 1: Hot layer check (cheapest — skipped if buffer already loaded)
@@ -1445,10 +1472,11 @@ def main():
 
     # -----------------------------------------------------------------------
     # LEVEL 2: Alpha concept index (fallthrough — hot skipped or missed)
+    # Lite mode: no alpha, no regime, no prediction error — exit here.
     # -----------------------------------------------------------------------
-    if not concept_index:
-        # No alpha — record all keywords as gaps (alpha not yet populated)
-        record_prediction_error(buffer_dir, keywords, [], None)
+    if is_lite or not concept_index:
+        if not is_lite:
+            record_prediction_error(buffer_dir, keywords, [], None)
         emit(_with_resolution({}, resolution_due))
 
     concept_matches = match_alpha_concepts(
