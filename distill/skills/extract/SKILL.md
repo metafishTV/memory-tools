@@ -182,6 +182,16 @@ Store the user's choice as the extraction strategy. When sampling, modify the sc
 
 **If figure_candidates ≤ 15**: proceed normally (no gate).
 
+### Phase 1.5b: Figure vs Equation Policy
+
+**Always extract as figure files:** Tables, graphs, charts, diagrams, schematics — anything visual or spatial that loses meaning when converted to text. These are inherently non-textual and must be preserved as images.
+
+**Equations — two tiers:**
+- **Core-meaning equations** (the equation IS the concept being distilled — e.g., the TAP equation, a key formulation): Include inline in the distillation markdown as LaTeX. Do NOT extract as a figure file. The equation is the definition, not an illustration.
+- **Derivational/scaffolding equations** (intermediate algebra, parametric expansions, proof steps that support but are not the concept): Skip entirely. Do not extract as figures, do not include inline. These are important within the source's argument but not for the distillation's purpose of mapping to the project.
+
+**Equation-heavy sources** (physics papers, mathematical biology): Most equations are scaffolding. Extract only the small number that carry structural meaning for the project. When in doubt, skip — a missing derivation step costs nothing, but figure-extracting 40 equations wastes budget and clutters the output.
+
 ### Phase 1.6: Text Extraction
 
 **Text extraction**: Run the bundled extraction script (writes UTF-8 to file, never stdout):
