@@ -45,16 +45,25 @@ ITERATION_CAP = 3
 
 
 # ---------------------------------------------------------------------------
-# Concept key normalization (shared with distill_backfill_alpha.py)
+# Concept key normalization — canonical source: schemas/normalize.py
 # ---------------------------------------------------------------------------
 
-def normalize_key(text: str) -> str:
-    """Normalize a concept name to a marker key."""
-    s = text.strip().lower()
-    s = re.sub(r'\(.*?\)', '', s)
-    s = re.sub(r'[^a-z0-9\s_]', '', s)
-    s = re.sub(r'\s+', '_', s.strip())
-    return s[:40]
+try:
+    # Import from shared schemas package (preferred)
+    import importlib, sys as _sys
+    _schema_dir = str(Path(__file__).resolve().parent.parent.parent / 'schemas')
+    if _schema_dir not in _sys.path:
+        _sys.path.insert(0, _schema_dir)
+    from normalize import normalize_key
+except (ImportError, Exception):
+    # Fallback: inline copy for standalone invocation
+    def normalize_key(text: str) -> str:
+        """Normalize a concept name to a marker key (fallback)."""
+        s = text.strip().lower()
+        s = re.sub(r'\(.*?\)', '', s)
+        s = re.sub(r'[^a-z0-9\s_]', '', s)
+        s = re.sub(r'\s+', '_', s.strip())
+        return s[:40]
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "convergence-web.schema.json",
+  "title": "Convergence Web Entry",
+  "description": "A single cw: entry representing a convergence web edge between two concepts.",
+  "type": "object",
+  "required": ["type", "source_folder", "thesis", "athesis", "synthesis", "metathesis"],
+  "properties": {
+    "type": {
+      "type": "string",
+      "const": "convergence_web"
+    },
+    "source_folder": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+      "description": "Kebab-case source folder that identified the convergence."
+    },
+    "thesis": {
+      "type": "object",
+      "required": ["ref", "label"],
+      "properties": {
+        "ref": {
+          "type": "string",
+          "pattern": "^w:\\d+$",
+          "description": "Alpha entry ID for the first concept."
+        },
+        "label": {
+          "type": "string",
+          "description": "Display label (e.g. Source:Concept)."
+        }
+      },
+      "additionalProperties": false
+    },
+    "athesis": {
+      "type": "object",
+      "required": ["ref", "label"],
+      "properties": {
+        "ref": {
+          "type": "string",
+          "pattern": "^w:\\d+$",
+          "description": "Alpha entry ID for the second concept."
+        },
+        "label": {
+          "type": "string",
+          "description": "Display label (e.g. Source:Concept)."
+        }
+      },
+      "additionalProperties": false
+    },
+    "synthesis": {
+      "type": "string",
+      "pattern": "^\\[(complementarity|independent_convergence|genealogy|elaboration|tension|wall)\\]",
+      "description": "Synthesis tag followed by description of shared/involutory ground."
+    },
+    "metathesis": {
+      "type": "string",
+      "description": "What each concept does independently in its own domain (evolutory)."
+    },
+    "context": {
+      "type": "string",
+      "description": "1-2 sentences on why this convergence matters for the project."
+    },
+    "origin": {
+      "type": "string",
+      "enum": ["distill", "session"],
+      "default": "distill"
+    }
+  },
+  "additionalProperties": false
+}

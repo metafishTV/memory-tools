@@ -10,7 +10,7 @@ Extract raw content from source documents and prepare it for analytic passes.
 ## Prerequisites
 
 **Context check**: The parent `distill` skill reads the project config once and holds it in conversation context. Verify these values are already loaded before re-reading the file:
-- **Output paths**: `distillation_dir`, `figures_dir`, and `raw` archive location
+- **Output paths**: `distillation_dir`, `interpretations_dir`, `figures_dir`, and `raw` archive location
 - **Tooling profile**: Which specialist tools are installed, demand-install, or declined
 - **GROBID mode**: Whether scholarly paper processing is enabled
 
@@ -44,12 +44,18 @@ If running standalone (not invoked by the parent skill), read the project distil
 
 **ShortTitle rules**: 2-4 words from the title, CamelCase, no articles/prepositions. "A Survey of Machine Learning Methods" -> `MachineLearning`.
 
-**Step L2b: Redistillation check** -- After constructing the label, check if artifacts already exist for this source:
+**Step L2b: Redistillation check** -- After constructing the label, check if artifacts already exist for this source. Run ALL FOUR checks — if ANY return true, this is a redistillation:
 
-1. Check `[distillation_dir]/[Source-Label].md`
-2. Check `[interpretations_dir]/[Source-Label].md`
-3. Check `[figures_dir]/[Source-Label]/`
-4. Check alpha bin: scan `alpha/index.json` entries where `source` matches the source folder (kebab-case of label)
+1. Check file exists: `[distillation_dir]/[Source-Label].md`
+2. Check file exists: `[interpretations_dir]/[Source-Label].md`
+3. Check directory exists: `[figures_dir]/[Source-Label]/`
+4. Check alpha bin: convert label to kebab-case (`label.lower().replace('_', '-')`) and query:
+   ```bash
+   python ${CLAUDE_PLUGIN_ROOT}/scripts/buffer_manager.py alpha-query --buffer-dir [project_root]/.claude/buffer/ --source [kebab-case-label]
+   ```
+   If this returns any entries, the source has existing alpha entries.
+
+**⚠ All four checks are mandatory.** Do NOT skip any. Use `Glob` or `Read` to verify file existence — do not assume files don't exist without checking.
 
 **If ANY exist**, this is a redistillation. **⚠ MANDATORY POPUP** — combine redistill action AND label confirmation into a single `AskUserQuestion`:
 
@@ -175,6 +181,16 @@ figure_candidates = len(scan["scanned"]) + len(scan["tables"]) +
 Store the user's choice as the extraction strategy. When sampling, modify the scan JSON passed to `distill_figures.py` to include only the sampled page indices. When "OCR text only," skip the Figure Handling Pipeline entirely. When "I'll specify," ask the user for page ranges and filter accordingly.
 
 **If figure_candidates ≤ 15**: proceed normally (no gate).
+
+### Phase 1.5b: Figure vs Equation Policy
+
+**Always extract as figure files:** Tables, graphs, charts, diagrams, schematics — anything visual or spatial that loses meaning when converted to text. These are inherently non-textual and must be preserved as images.
+
+**Equations — two tiers:**
+- **Core-meaning equations** (the equation IS the concept being distilled — e.g., the TAP equation, a key formulation): Include inline in the distillation markdown as LaTeX. Do NOT extract as a figure file. The equation is the definition, not an illustration.
+- **Derivational/scaffolding equations** (intermediate algebra, parametric expansions, proof steps that support but are not the concept): Skip entirely. Do not extract as figures, do not include inline. These are important within the source's argument but not for the distillation's purpose of mapping to the project.
+
+**Equation-heavy sources** (physics papers, mathematical biology): Most equations are scaffolding. Extract only the small number that carry structural meaning for the project. When in doubt, skip — a missing derivation step costs nothing, but figure-extracting 40 equations wastes budget and clutters the output.
 
 ### Phase 1.6: Text Extraction
 

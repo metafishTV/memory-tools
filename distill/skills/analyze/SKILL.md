@@ -446,10 +446,18 @@ Use the custom schema defined during differentiation (loaded from `custom_schema
 **Open Questions**: [N] flagged for review
 - [one-line question]
 
+**Changes from previous distillation** (redistills only — omit for first-time):
+- Added: [N] concepts ([list])
+- Removed: [N] concepts ([list])
+- Retained: [N] concepts
+- Mode: [archive|update|delete]
+
 **Files**
 - Distillation: `[relative path]`
 - Interpretation: `[relative path]`
 ```
+
+For redistillations, read the `.redistill_changelog` file (written by `integrate` in a previous pass, or available from the Step 2a inventory data passed from `extract`). If no changelog exists yet (this is the first redistill), compute the diff by comparing the previous manifest entry's concept keys with the current interpretation's concepts.
 
 **Formatting rules**:
 - The concept mapping table is the centerpiece — one row per mapping, sortable by Type column at a glance

@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "redistill-changelog.schema.json",
+  "title": "Redistill Changelog",
+  "description": "The .redistill_changelog diff file produced during re-distillation.",
+  "type": "object",
+  "required": ["source_label", "redistill_date", "mode", "iteration", "previous", "current", "diff", "alpha_changes"],
+  "properties": {
+    "source_label": {
+      "type": "string",
+      "description": "Source label being re-distilled."
+    },
+    "redistill_date": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+    },
+    "mode": {
+      "type": "string",
+      "enum": ["archive", "update", "delete"]
+    },
+    "iteration": {
+      "type": "integer",
+      "minimum": 2,
+      "description": "Iteration number (always >= 2 for re-distillation)."
+    },
+    "previous": {
+      "type": "object",
+      "required": ["date", "concept_count", "concept_keys"],
+      "properties": {
+        "date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+        "concept_count": { "type": "integer", "minimum": 0 },
+        "concept_keys": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": false
+    },
+    "current": {
+      "type": "object",
+      "required": ["concept_count", "concept_keys"],
+      "properties": {
+        "concept_count": { "type": "integer", "minimum": 0 },
+        "concept_keys": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": false
+    },
+    "diff": {
+      "type": "object",
+      "required": ["added", "removed", "retained", "modified"],
+      "properties": {
+        "added": { "type": "array", "items": { "type": "string" } },
+        "removed": { "type": "array", "items": { "type": "string" } },
+        "retained": { "type": "array", "items": { "type": "string" } },
+        "modified": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": false
+    },
+    "alpha_changes": {
+      "type": "object",
+      "required": ["new_ids", "updated_ids", "orphaned_ids"],
+      "properties": {
+        "new_ids": { "type": "array", "items": { "type": "string" } },
+        "updated_ids": { "type": "array", "items": { "type": "string" } },
+        "orphaned_ids": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

@@ -12,6 +12,11 @@ SCRIPTS_DIR = Path(__file__).parent.parent / 'plugin' / 'scripts'
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
+# Add schemas/ to sys.path for shared normalize/validate imports
+SCHEMAS_DIR = Path(__file__).parent.parent / 'schemas'
+if str(SCHEMAS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCHEMAS_DIR))
+
 FIXTURES_DIR = Path(__file__).parent / 'fixtures'
 
 

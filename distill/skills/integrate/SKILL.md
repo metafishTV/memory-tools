@@ -117,6 +117,45 @@ After any redistillation mode, log the action in warm `validation_log`:
 {"check": "redistill", "status": "[mode]", "detail": "Source [label]: [N] existing, [M] updated/orphaned/deleted, [K] new", "session": "[date]"}
 ```
 
+**Step 2c: Generate redistill changelog** — After all alpha writes/updates/deletes for a redistillation are complete, write a `.redistill_changelog` JSON file to the source's alpha folder (`[alpha_dir]/[kebab-case-source]/.redistill_changelog`):
+
+```json
+{
+  "source_label": "[Source-Label]",
+  "redistill_date": "[today ISO date]",
+  "mode": "[archive|update|delete]",
+  "iteration": [N],
+  "previous": {
+    "date": "[date of last distillation from manifest]",
+    "concept_count": [count from inventory],
+    "concept_keys": ["key1", "key2"]
+  },
+  "current": {
+    "concept_count": [new count],
+    "concept_keys": ["key1", "key3"]
+  },
+  "diff": {
+    "added": ["key3"],
+    "removed": ["key2"],
+    "retained": ["key1"],
+    "modified": []
+  },
+  "alpha_changes": {
+    "new_ids": ["w:NNN"],
+    "updated_ids": ["w:MMM"],
+    "orphaned_ids": ["w:OOO"]
+  }
+}
+```
+
+Schema: `schemas/redistill-changelog.schema.json`. The `iteration` field is the manifest source's `iteration` count (should be >= 2 for any redistillation). The `previous` data comes from the Step 2a inventory. The `diff` is computed by comparing previous and current concept key sets.
+
+**Manifest update**: After writing the changelog, update the source's manifest entry to include a `redistill_history` record:
+```json
+{"date": "[today]", "mode": "[mode]", "concept_count": [new count], "changelog_path": "[alpha_dir]/[source]/.redistill_changelog"}
+```
+Use `distill_manifest.py update` with the `--redistill-history` flag (if available) or append directly to the source entry's `redistill_history` array.
+
 #### concept_convergence type (alpha path)
 
 Draw mappings from the interpretation file's Project Significance table and Integration Points. For each concept mapping, build a **thin** JSON object with marker reference and pipe to `alpha-write`. The complete schema is specified below — do NOT read existing alpha entries to learn the format:
