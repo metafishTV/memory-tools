@@ -2,6 +2,19 @@
 
 All notable changes to buffer are documented here.
 
+## [buffer 2.6.0 + distill 2.2.0] - 2026-03-13
+
+### Plugin Standardization — Schemas, Contracts, Validation
+- **Shared schema directory** (`schemas/`) — 8 JSON Schema files (draft 2020-12) defining all cross-plugin data formats: alpha-entry, convergence-web, alpha-index, manifest-source, forward-note, hot-layer, distill-stats, redistill-changelog.
+- **Cross-plugin contract** (`schemas/CROSS_PLUGIN_CONTRACT.md`) — Three handoff points documented: alpha entry creation, convergence web creation, sigma hook reads. Formal interface spec for distill→buffer data flow.
+- **Conventions doc** (`schemas/CONVENTIONS.md`) — 8 non-machine-validatable rules: source label naming, folder naming, concept key normalization, ID formatting, synthesis tags, relationship types, voice rules, atom markers.
+- **Canonical normalize_key()** (`schemas/normalize.py`) — Single source of truth. Both `distill_manifest.py` and `buffer_manager.py` import from here (with inline fallback for standalone invocation). Eliminates 3 duplicated implementations.
+- **Validation tooling** (`schemas/validate.py`) — Advisory CLI validator: `python validate.py all <project-root>` scans alpha index, manifest, forward notes, hot layer, distill stats. Exit code 0/1.
+- **Redistill popup fix** — Extract skill's L2b redistillation check was never firing because `interpretations_dir` was missing from prerequisites. Fixed prerequisites + made all 4 existence checks explicit with concrete commands.
+- **Redistill changelog** — New `.redistill_changelog` JSON artifact produced during re-distillation (Step 2c in integrate skill). Records concept diff (added/removed/retained/modified) and alpha changes (new/updated/orphaned IDs). Schema: `redistill-changelog.schema.json`. Analyze skill now shows "Changes from previous distillation" in interpretation summary.
+- **Manifest redistill_history** — Per-source manifest entries gain `redistill_history` array tracking date, mode, concept count, and changelog path across re-distillation passes.
+- **40 new tests** across 3 test files (test_normalize: 8, test_validate: 27, test_redistill_changelog: 5). All passing.
+
 ## [buffer 2.5.0] - 2026-03-12
 
 ### Cooldown Timer

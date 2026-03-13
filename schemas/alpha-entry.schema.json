@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "alpha-entry.schema.json",
+  "title": "Alpha Entry",
+  "description": "A single w: entry in the alpha bin index, representing a cross-source concept.",
+  "type": "object",
+  "required": ["type", "source_folder", "key"],
+  "properties": {
+    "type": {
+      "type": "string",
+      "const": "cross_source"
+    },
+    "source_folder": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+      "description": "Kebab-case source folder name."
+    },
+    "key": {
+      "type": "string",
+      "pattern": "^.+:.+$",
+      "description": "Display key in Source:ConceptName format."
+    },
+    "maps_to": {
+      "type": "string",
+      "default": "",
+      "description": "Project framework element this concept maps to."
+    },
+    "ref": {
+      "type": "string",
+      "description": "Source citation reference (e.g. section number)."
+    },
+    "suggest": {
+      "description": "Suggested connections (array or null).",
+      "oneOf": [
+        { "type": "array", "items": { "type": "string" } },
+        { "type": "null" }
+      ]
+    },
+    "body": {
+      "description": "Project-specific integration notes or null.",
+      "oneOf": [
+        { "type": "string" },
+        { "type": "null" }
+      ]
+    },
+    "distillation": {
+      "type": "string",
+      "description": "Filename of distillation source document."
+    },
+    "marker": {
+      "type": "string",
+      "description": "Concept key matching CONCEPT marker in distillation file."
+    },
+    "origin": {
+      "type": "string",
+      "enum": ["distill", "session"],
+      "default": "distill",
+      "description": "Provenance: distillation pipeline or session capture."
+    }
+  },
+  "additionalProperties": false
+}

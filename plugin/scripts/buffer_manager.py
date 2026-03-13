@@ -45,6 +45,25 @@ if sys.platform == 'win32' and __name__ == '__main__':
 
 
 # ---------------------------------------------------------------------------
+# Concept key normalization — canonical source: schemas/normalize.py
+# ---------------------------------------------------------------------------
+
+try:
+    _schema_dir = str(Path(__file__).resolve().parent.parent.parent / 'schemas')
+    if _schema_dir not in sys.path:
+        sys.path.insert(0, _schema_dir)
+    from normalize import normalize_key
+except (ImportError, Exception):
+    def normalize_key(text):
+        """Normalize a concept name to a marker key (fallback)."""
+        s = text.strip().lower()
+        s = re.sub(r'\(.*?\)', '', s)
+        s = re.sub(r'[^a-z0-9\s_]', '', s)
+        s = re.sub(r'\s+', '_', s.strip())
+        return s[:40]
+
+
+# ---------------------------------------------------------------------------
 # Constants (defaults — can be overridden per-project in skill config)
 # ---------------------------------------------------------------------------
 

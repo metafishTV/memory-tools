@@ -10,7 +10,7 @@ Extract raw content from source documents and prepare it for analytic passes.
 ## Prerequisites
 
 **Context check**: The parent `distill` skill reads the project config once and holds it in conversation context. Verify these values are already loaded before re-reading the file:
-- **Output paths**: `distillation_dir`, `figures_dir`, and `raw` archive location
+- **Output paths**: `distillation_dir`, `interpretations_dir`, `figures_dir`, and `raw` archive location
 - **Tooling profile**: Which specialist tools are installed, demand-install, or declined
 - **GROBID mode**: Whether scholarly paper processing is enabled
 
@@ -44,12 +44,18 @@ If running standalone (not invoked by the parent skill), read the project distil
 
 **ShortTitle rules**: 2-4 words from the title, CamelCase, no articles/prepositions. "A Survey of Machine Learning Methods" -> `MachineLearning`.
 
-**Step L2b: Redistillation check** -- After constructing the label, check if artifacts already exist for this source:
+**Step L2b: Redistillation check** -- After constructing the label, check if artifacts already exist for this source. Run ALL FOUR checks — if ANY return true, this is a redistillation:
 
-1. Check `[distillation_dir]/[Source-Label].md`
-2. Check `[interpretations_dir]/[Source-Label].md`
-3. Check `[figures_dir]/[Source-Label]/`
-4. Check alpha bin: scan `alpha/index.json` entries where `source` matches the source folder (kebab-case of label)
+1. Check file exists: `[distillation_dir]/[Source-Label].md`
+2. Check file exists: `[interpretations_dir]/[Source-Label].md`
+3. Check directory exists: `[figures_dir]/[Source-Label]/`
+4. Check alpha bin: convert label to kebab-case (`label.lower().replace('_', '-')`) and query:
+   ```bash
+   python ${CLAUDE_PLUGIN_ROOT}/scripts/buffer_manager.py alpha-query --buffer-dir [project_root]/.claude/buffer/ --source [kebab-case-label]
+   ```
+   If this returns any entries, the source has existing alpha entries.
+
+**⚠ All four checks are mandatory.** Do NOT skip any. Use `Glob` or `Read` to verify file existence — do not assume files don't exist without checking.
 
 **If ANY exist**, this is a redistillation. **⚠ MANDATORY POPUP** — combine redistill action AND label confirmation into a single `AskUserQuestion`:
 
