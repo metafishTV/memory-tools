@@ -25,3 +25,16 @@ def is_git_repo(path):
         return os.path.isdir(os.path.join(path, '.git'))
     except (TypeError, OSError):
         return False
+
+
+def match_cwd_to_project(cwd, repo_root):
+    """Check if cwd is inside (or equal to) repo_root.
+
+    Uses os.path.normcase for Windows case-insensitivity.
+    Trailing separator guard prevents /proj matching /project-2.
+    """
+    norm_cwd = os.path.normcase(os.path.abspath(cwd))
+    norm_root = os.path.normcase(os.path.abspath(repo_root))
+    if norm_cwd == norm_root:
+        return True
+    return norm_cwd.startswith(norm_root + os.sep)
