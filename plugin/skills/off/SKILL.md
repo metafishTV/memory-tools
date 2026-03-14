@@ -326,10 +326,12 @@ Read (or create) `~/.claude/buffer/projects.json`. If the current project is not
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "projects": {
     "[project-name]": {
-      "buffer_path": "[absolute path to .claude/buffer/]",
+      "repo_root": "[git rev-parse --show-toplevel output]",
+      "buffer_path": "[repo_root]/.claude/buffer",
+      "scope": "full | lite",
       "last_handoff": "YYYY-MM-DD",
       "project_context": "[one-sentence from orientation.core_insight]"
     }
@@ -337,7 +339,9 @@ Read (or create) `~/.claude/buffer/projects.json`. If the current project is not
 }
 ```
 
-If already registered, update `last_handoff` to today's date. Write back.
+Use `git rev-parse --show-toplevel` to get the `repo_root` dynamically. For lite users without a git repo, `repo_root` equals the working directory.
+
+If already registered, update `last_handoff` and ensure `repo_root` is present. Write back.
 
 The project name comes from the hot layer's `project_name` field (if present) or is inferred from the repo directory name.
 

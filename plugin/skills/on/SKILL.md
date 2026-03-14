@@ -50,50 +50,72 @@ needed to orient.
 **⚠ MANDATORY POPUP**: Always show the project selector via AskUserQuestion before loading anything.
 Never auto-load a trunk without user confirmation.
 
-### 0a: Check for project skill
+### 0a: Locate project context
 
-1. Determine the current repository root (via `git rev-parse --show-toplevel` or working directory)
-2. Check if `<repo>/.claude/skills/buffer/on.md` exists
-3. **If it exists**: read that file and follow its instructions instead. Stop processing this file.
-4. **If not**: continue below.
+Determine what projects are available. Do NOT load any trunk data at this point.
 
-### 0b: Gather context (do NOT load yet)
+1. Try `git rev-parse --show-toplevel` from the current working directory.
+   - **If success**: cwd is inside a git repo. Note the repo root. Check if
+     `<repo-root>/.claude/buffer/handoff.json` exists — if so, this is a
+     local project with a buffer.
 
-Collect available options silently — do NOT load any trunk data at this point:
+2. **If cwd is NOT a git repo** (git rev-parse fails):
+   - Scan **immediate children** of cwd (one level deep only) for directories
+     containing `.git/`.
+   - For each git-repo child, compute a score:
+     | Signal | Score |
+     |--------|-------|
+     | Has `.claude/buffer/handoff.json` | +1.0 |
+     | Has `.git/` | +0.5 |
+     | Matches a `projects.json` entry | +0.3 |
+   - Sort by score descending.
 
-1. Check if `<repo>/.claude/buffer/handoff.json` exists (local trunk)
-2. Read `~/.claude/buffer/projects.json` if it exists (global registry)
-3. Build the option list for the selector
+3. Also read `~/.claude/buffer/projects.json` (if it exists) for entries whose
+   `repo_root` is under the current cwd. Merge with filesystem results from
+   step 2, deduplicate by repo root path.
 
-### 0c: Project selector (ALWAYS shown)
+### 0b: Project selector (ALWAYS shown)
 
-**⚠ MANDATORY POPUP**: You MUST call `AskUserQuestion` with the options below before proceeding. Do NOT skip this. Do NOT load any trunk data until the user responds.
-The popup adapts to what was found in 0b:
+**⚠ MANDATORY POPUP**: You MUST call `AskUserQuestion` before proceeding.
+Do NOT load any trunk data until the user responds.
 
-**Local trunk found + registry has entries:**
-- Resume local project: [project name from local trunk] (last handoff: [date])
+The popup adapts to what was found in 0a:
+
+**One result with score >= 1.0:**
+- Resume [project name] at [repo path] (Recommended) (last handoff: [date])
+- Start new project
+- Start lite session
+
+**Multiple results with score >= 1.0:**
+- Present as ranked list (score descending), top entry pre-selected
+- Start new project
+- Start lite session
+
+**Results found but all below 1.0 (git repos without buffers):**
+- Initialize buffer in [repo name] (highest-scoring)
+- Start new project
+- Start lite session
+
+**No results + registry has entries:**
+- Resume [most recent project from registry] (last handoff: [date])
 - Switch to another project (shows full list)
 - Start new project
 - Start lite session
 
-**Local trunk found + no registry:**
-- Resume local project: [project name from local trunk] (last handoff: [date])
-- Start new project
-- Start lite session
-
-**No local trunk + registry has entries:**
-- Resume [most recent project] (last handoff: [date])
-- Switch to another project (shows full list)
-- Start new project
-- Start lite session
-
-**No local trunk + no registry (first run):**
+**No results + no registry (first run):**
 - Proceed directly to first-run setup (0d)
 
-"Most recent" = highest last_handoff date in the registry.
-
-If user selects an existing project: load its buffer_path and proceed to Step 1.
+If user selects an existing project: load its buffer_path and proceed to Step 0c.
 If user selects "Start new project" or "Start lite session": proceed to 0d.
+
+### 0c: Check for project skill
+
+After the user selects a project, check if the selected repo has
+`<repo>/.claude/skills/buffer/on.md`.
+
+- **If it exists**: read that file and follow its instructions instead. Stop
+  processing this file.
+- **If not**: continue with Step 1 (standard on-hand process).
 
 ### 0d: First-run setup
 
@@ -108,6 +130,9 @@ No sigma trunk found anywhere. Initialize a new project:
 2. **⚠ MANDATORY POPUP** via AskUserQuestion (Full only): "Project name + one-sentence core insight." Wait for response.
 3. **⚠ MANDATORY POPUP** via AskUserQuestion: "Remote backup?" (see off skill first-run flow). Wait for response.
 4. Initialize `.claude/buffer/` with scope-appropriate schemas:
+   - **Target directory**: If a git repo was found (via Step 0a), create the
+     buffer inside the git repo's `.claude/buffer/`, even if cwd is a parent
+     directory. If no git repo was found, create in cwd (lite users without git).
    - **Lite**: `buffer_mode`, `session_meta`, `active_work`, `open_threads`, `recent_decisions`, `instance_notes`, `natural_summary`
    - **Full**: Full schema including `concept_map_digest`
 5. Write `.claude/buffer.config.yaml` — machine-readable mode marker:
@@ -131,10 +156,12 @@ Read (or create) `~/.claude/buffer/projects.json`:
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "projects": {
     "[project-name]": {
-      "buffer_path": "[absolute path to .claude/buffer/]",
+      "repo_root": "[absolute path to git repo root, from git rev-parse --show-toplevel]",
+      "buffer_path": "[repo_root]/.claude/buffer",
+      "scope": "full | lite",
       "last_handoff": "YYYY-MM-DD",
       "project_context": "[one-sentence description]"
     }
@@ -142,6 +169,7 @@ Read (or create) `~/.claude/buffer/projects.json`:
 }
 ```
 
+For lite users without a git repo, `repo_root` equals the working directory.
 Add the current project if not already registered. Write back.
 
 ### 0f: MEMORY.md integration (first-run only)
