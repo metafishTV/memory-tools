@@ -236,6 +236,7 @@ Hot and warm layers for active work, decisions, threads, instance notes, and nat
   "instance_notes": {
     "from": "instance-N",
     "to": "instance-N+1",
+    "dialogue_style": "1-2 sentence characterization of session tone, register, and conversational flavor.",
     "remarks": "Free-form observations and warnings for the next instance.",
     "open_questions": ["Question that was never raised during the session"]
   },
@@ -469,6 +470,7 @@ Approve all / Skip all / Review one by one?
   "instance_notes": {
     "from": "instance-N",
     "to": "instance-N+1",
+    "dialogue_style": "1-2 sentence characterization of session tone, register, and conversational flavor.",
     "remarks": "Free-form observations and warnings for the next instance.",
     "open_questions": ["Question that was never raised during the session"]
   },
@@ -508,6 +510,7 @@ The hot layer is **referential, not explanatory**. If a concept needs explaining
 | `active_work.next_action` | ≤25 words | One sentence. Concrete. |
 | `open_threads` | ≤5 entries | `thread` ≤25 words. Omit empty `see` arrays. |
 | `recent_decisions` | ≤4 entries | `what` ≤8 words, `chose` ≤15 words, `why` ≤10 words. `session` optional (inherits from `session_meta.date`). Omit empty `see`. |
+| `instance_notes.dialogue_style` | ≤2 sentences | Conversational tone/register. Adopted by next instance. |
 | `instance_notes.remarks` | ≤7 entries | Each ≤20 words. Actionable warnings, not narratives. |
 | `instance_notes.open_questions` | ≤5 entries | Each ≤20 words. |
 | `concept_map_digest.recent_changes` | ≤15 entries | Full only. Oldest roll off when exceeded. |

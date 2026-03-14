@@ -2,6 +2,27 @@
 
 All notable changes to buffer are documented here.
 
+## [buffer 3.1.0] - 2026-03-14
+
+### Dialogue Continuity + Compaction Directives
+- **Dialogue style continuity** — `instance_notes.dialogue_style` field (≤2 sentences) captures session conversational register — tone, cadence, level of formality. `/buffer:off` writes it; `/buffer:on` Step 7 reads it and adopts it silently from the first response. No tonal reset between sessions.
+- **Layer 1 compaction directives** — PostCompact hook wired; `generate_directive_context()` reads `compact-directives.md` and `.session_active`, injects depth-adaptive guidance into every compaction event. Session vocabulary section (ephemeral neologisms/project terms) survives mid-session compactions, wiped at next `/buffer:on`.
+- **`/buffer:status` command** — On-demand health report: buffer state, directives file presence, CLAUDE.md compaction section, session depth.
+- **Session depth tracking** — `.session_active` tracks `off_count`; four display states: `buf:--`, `buf:saved`, `buf:on`, `buf:off xN`. Depth-adaptive guidance scales with compaction count.
+- **Registry-primary buffer discovery** — `buffer_utils.py` shared module with `is_git_repo`, `match_cwd_to_project`, `read_registry`, `find_buffer_dir`. `sigma_hook.py` and `compact_hook.py` delegate to it. Git-guarded walk-up fallback.
+- **CLAUDE.md** — Version bump checklist for contributors.
+- **Architecture docs** — `dialogue_style` schema and size limits; lite mode behavior documented.
+- **10 new compaction tests**, all passing.
+
+## [buffer 3.0.0 + distill 3.0.0] - 2026-03-13
+
+### Plugin Portability — First-Run Gate, Lite Mode, Upgrade Path
+- **First-run gate (distill)** — PreToolUse hook blocks distill skills until `/distill:differentiate` has configured the project. Checks for `SKILL.md` or `distill.config.yaml`. Fails open on errors.
+- **Lite mode (buffer)** — Sigma hook hot-layer-only mode: skips alpha, regime, prediction error, grid, CW-boost. `detect_buffer_mode()` reads hot layer. Lite alpha: Claude-native document indexing with `mode:lite` marker.
+- **Upgrade path** — Three trigger points (`buffer:on`, `differentiate`, `integrate`) detect lite alpha entries and offer/perform upgrade to full analysis.
+- **Architecture docs** — Lite mode behavior, config file contracts, upgrade path.
+- **430 tests** (30 new), all passing.
+
 ## [buffer 2.6.0 + distill 2.2.0] - 2026-03-13
 
 ### Plugin Standardization — Schemas, Contracts, Validation

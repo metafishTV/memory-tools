@@ -398,6 +398,8 @@ If the hot layer has an `instance_notes` section, present it:
 
 These questions are worth surfacing — the user may want to address them.
 
+**Dialogue style adoption**: If `instance_notes.dialogue_style` exists, read it and adopt that conversational register from your first response onward. Don't announce it ("I'll be casual now") — just *be* it. The goal is continuity: the user shouldn't feel a tonal shift between sessions.
+
 ### Step 7: Read MEMORY.md
 
 Read the project memory file for baseline context. The sigma trunk is the session alpha stash; MEMORY.md is the project baseline.
@@ -414,7 +416,7 @@ Compute the gap between today and `session_meta.date` from the hot layer.
 Tell the user:
 
 ```
-buffer v0.2.0 | [scope] mode | Alpha: N referents (if present) | W: [ratio]
+buffer v3.1.0 | [scope] mode | Alpha: N referents (if present) | W: [ratio]
 Context reconstructed from [date] handoff ([N days ago]). Ready to continue from [current_phase].
 Autosave armed — sigma trunk will stay current throughout the session.
 ```

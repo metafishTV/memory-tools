@@ -52,7 +52,7 @@ The alpha stash — crystallized session learnings ready for merge. Omit section
   "active_work": { "current_phase", "completed_this_session": [], "in_progress", "blocked_by", "next_action" },
   "new_decisions": [ { "what", "chose", "why" } ],
   "open_threads": [ { "thread", "status", "ref?" } ],
-  "instance_notes": { "from", "to", "remarks": [], "open_questions": [] },
+  "instance_notes": { "from", "to", "dialogue_style", "remarks": [], "open_questions": [] },
   "natural_summary": "2-3 plain-language sentences.",
   "concept_map_changes": [ "..." ],   // Full + Alpha only — see full-ref.md
   "convergence_web_changes": [ "..." ], // Full + Alpha only — see full-ref.md
@@ -190,6 +190,7 @@ Write the `instance_notes` section — personal remarks from you to the next ins
 
 Include:
 
+- **dialogue_style**: A 1-2 sentence characterization of the conversational tone, register, and flavor of this session. Was it casual and collaborative? Terse and technical? Exploratory and discursive? Did the user use humor, shorthand, or a particular cadence? The next instance should be able to read this and match the register from the first message — not start cold and formal when the user was riffing casually. Examples: "Casual, collaborative, lots of shorthand — user thinks out loud and expects you to keep up rather than over-explain." / "Direct and technical. User prefers terse responses with no filler. Questions are sharp and expect equally sharp answers."
 - **remarks**: Things you learned about working with this user, this codebase, or this project that are not captured in the structured data. Warnings, tips, things that surprised you.
 - **open_questions**: Questions that occurred to you during the session but you did not get to raise. These help the next instance know where the edges of understanding are.
 - **alpha_accessed**: (optional) List of alpha referent IDs loaded this session (e.g., `["w:218", "cw:83"]`). Helps the next instance know which referents were relevant to this session's work without loading everything.
