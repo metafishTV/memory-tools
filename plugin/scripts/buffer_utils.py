@@ -88,3 +88,40 @@ def read_registry(path=None):
         data['schema_version'] = 2
 
     return data
+
+
+def find_buffer_dir(cwd, registry_path=None):
+    """Find the buffer directory for the given working directory.
+
+    Two-tier lookup:
+    1. Registry lookup: check projects.json for a project whose repo_root
+       contains cwd. If match found and buffer_path exists on disk, return it.
+    2. Walk-up fallback: walk up from cwd looking for .claude/buffer/handoff.json,
+       but ONLY accept if the containing directory is a git repo (.git exists).
+
+    Returns absolute path to buffer dir, or None.
+    """
+    if registry_path is None:
+        registry_path = REGISTRY_PATH
+
+    # Tier 1: Registry lookup
+    registry = read_registry(registry_path)
+    for _name, proj in registry.get('projects', {}).items():
+        repo_root = proj.get('repo_root', '')
+        buffer_path = proj.get('buffer_path', '')
+        if repo_root and match_cwd_to_project(cwd, repo_root):
+            if os.path.isdir(buffer_path) and os.path.isfile(
+                    os.path.join(buffer_path, 'handoff.json')):
+                return buffer_path
+
+    # Tier 2: Walk-up with git guard
+    current = os.path.abspath(cwd)
+    while True:
+        candidate = os.path.join(current, '.claude', 'buffer', 'handoff.json')
+        if os.path.exists(candidate):
+            if is_git_repo(current):
+                return os.path.join(current, '.claude', 'buffer')
+        parent = os.path.dirname(current)
+        if parent == current:
+            return None
+        current = parent
