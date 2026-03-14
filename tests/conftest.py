@@ -62,6 +62,8 @@ def buffer_dir(tmp_path, hot_minimal):
     buf.mkdir(parents=True)
     (buf / 'handoff.json').write_text(
         json.dumps(hot_minimal, indent=2, ensure_ascii=False), encoding='utf-8')
+    # buffer_utils.find_buffer_dir requires a git repo root for walk-up discovery
+    (tmp_path / '.git').mkdir(exist_ok=True)
     return buf
 
 

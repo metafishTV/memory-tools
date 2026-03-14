@@ -21,6 +21,8 @@ def make_buffer(tmp_path, buffer_mode='lite', hot_extras=None,
     """Create a minimal buffer directory with the given mode."""
     buf = tmp_path / '.claude' / 'buffer'
     buf.mkdir(parents=True)
+    # buffer_utils.find_buffer_dir requires a git repo root for walk-up discovery
+    (tmp_path / '.git').mkdir(exist_ok=True)
 
     hot = {
         'schema_version': 2,
