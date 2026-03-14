@@ -201,6 +201,55 @@ Read `.claude/buffer/.session_active` if it exists. It's a JSON file: `{"date": 
 
 This marker tells the statusline (and other tools) that the buffer is loaded and active. The `off_count` tracks how many times `/buffer:off` has been run this session — a signal of session depth and context recycling.
 
+### Step 0d-b: Write compaction directives
+
+Create `.claude/buffer/compact-directives.md` with four sections:
+
+1. **On Disk** — list every buffer file that actually exists on disk:
+   handoff.json, handoff-warm.json, handoff-cold.json, alpha/ directory,
+   briefing.md, forward_notes.json. Only list files you confirmed exist.
+
+2. **Active Threads** — copy from `open_threads` in the handoff.json you
+   just loaded. One line per thread with its status and any reference.
+
+3. **Already Persisted** — note what data is already saved in the trunk
+   from previous sessions.
+
+4. **Session Vocabulary** — leave empty. Terms will be added during the
+   session as novel concepts emerge.
+
+Also, ensure the project's CLAUDE.md contains a `## Compaction Guidance`
+section. If it doesn't exist, add it. If it exists, replace it. The section
+content:
+
+```
+## Compaction Guidance
+
+When compacting this conversation, follow these priorities:
+
+- ALREADY ON DISK (do not reproduce in summary):
+  - Session buffer trunk: .claude/buffer/handoff.json (threads, decisions, state)
+  - Alpha bin: .claude/buffer/alpha/ (concept definitions, glossary)
+  - Git history: recoverable via tools
+- PRESERVE IN SUMMARY (context-only, not on disk):
+  - Active thread of work and current task state
+  - Decisions made since last save
+  - User preferences or corrections expressed this session
+  - Session vocabulary (terms with specific meaning coined this session)
+- End your summary with 1-2 sentences capturing exactly what was being
+  discussed in the most recent exchange — the immediate context the user
+  will expect to resume from.
+- Project glossary and concept definitions are in the alpha bin. Standard
+  project terms can be used without re-defining. Only preserve definitions
+  for terms coined THIS session.
+```
+
+During this session, if you coin or adopt a term with specific meaning
+(neologism, repurposed word, project-specific shorthand), add it to the
+Session Vocabulary section of compact-directives.md with a 1-sentence
+definition. Keep to ~5-10 entries. Standard technical vocabulary and terms
+already in the alpha bin don't belong here.
+
 ### Step 1: Read hot layer only
 
 Read `.claude/buffer/handoff.json` (~200 lines). This is the only mandatory read at startup.
