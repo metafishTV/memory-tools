@@ -2,6 +2,15 @@
 
 All notable changes to buffer are documented here.
 
+## [buffer 3.3.0] - 2026-03-14
+
+### Headroom Check + Telemetry (Layers 2-3)
+- **Headroom check (Layer 2):** Context pressure tier detection (watch/warn/critical at 70/85/93%) with universal sigma hook injection on tier crossing. Informs, never blocks.
+- **Statusline `ctx:XX%`:** Passive context pressure indicator for CLI users — `ctx:72%` (watch), `ctx:87%!` (warn), `ctx:95%!!` (critical).
+- **Telemetry (Layer 3):** Append-only `.claude/buffer/telemetry.jsonl` with three event types: `compact` (emitted by pre-compact hook), `headroom_warning` (emitted by sigma hook on tier crossing), `session_end` (emitted by `/buffer:off`).
+- **`telemetry.py`:** Shared utility with `emit()`, `tier_from_percentage()`, `cache_ratio()`, and `session-end` CLI subcommand. Fail-silent — telemetry never breaks hooks.
+- **21 new tests** (17 telemetry + 4 headroom), all passing.
+
 ## [buffer 3.2.0] - 2026-03-14
 
 ### buffer:football — Cross-Session Task Delegation
