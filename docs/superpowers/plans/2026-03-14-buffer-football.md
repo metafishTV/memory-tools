@@ -1036,7 +1036,15 @@ python plugin/scripts/buffer_football.py pack \
   --next-action '<STRING>'
 ```
 
-### Step 5W: Confirm
+### Step 5W: Validate
+
+```bash
+python plugin/scripts/buffer_football.py validate --football .claude/buffer/football.json
+```
+
+If `valid: false` → show error to user, STOP.
+
+### Step 6W: Confirm
 
 Tell the user: "Football returned. Have the planner session run `/buffer:catch`."
 ```
@@ -1105,7 +1113,7 @@ Create `.claude/buffer/football-micro.json`:
 {
   "session_date": "YYYY-MM-DD",
   "catch_count": 1,
-  "throw_count": 1,
+  "throw_count": 0,
   "active_task": "<current_task from planner_payload.thread>",
   "completed_tasks": [],
   "decisions_made": [],
