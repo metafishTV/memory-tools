@@ -1436,7 +1436,7 @@ def main():
 
                 # Only inject on tier crossing
                 if current_tier != last_tier:
-                    # Write new tier
+                    # Write tier first so crossing is never double-emitted even if telemetry fails
                     try:
                         with open(tier_path, 'w', encoding='utf-8') as f:
                             f.write(current_tier)
@@ -1482,13 +1482,15 @@ def main():
 
     def _emit_with_headroom(output):
         """Prepend headroom warning to systemMessage if present."""
-        if headroom_injection and isinstance(output, dict):
-            existing = output.get('systemMessage', '')
-            if existing:
-                output['systemMessage'] = headroom_injection + '\n\n' + existing
-            else:
-                output['systemMessage'] = headroom_injection
-                output['suppressOutput'] = True
+        if not headroom_injection or not isinstance(output, dict):
+            return output
+        output = dict(output)  # shallow copy — never mutate caller's dict
+        existing = output.get('systemMessage', '')
+        if existing:
+            output['systemMessage'] = headroom_injection + '\n\n' + existing
+        else:
+            output['systemMessage'] = headroom_injection
+        output.setdefault('suppressOutput', True)
         return output
 
     # Extract keywords (dynamic cap based on prompt size)
