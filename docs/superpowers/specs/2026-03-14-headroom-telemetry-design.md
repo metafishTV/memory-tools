@@ -48,9 +48,11 @@ Cache ratio = `cache_read / (cache_read + cache_creation + input)`. Low cache ra
 
 `statusline.py` reads session JSON from stdin but currently only extracts `cwd`. Extend it to also extract `used_percentage` and add a `ctx:XX%` segment after existing segments when `used_percentage >= 70`:
 
-- `70-84%`: `ctx:72%`
-- `85-92%`: `ctx:87%!`
-- `93%+`: `ctx:95%!!`
+- `70-84%`: `ctx:72%` (watch)
+- `85-92%`: `ctx:87%!` (warn)
+- `93%+`: `ctx:95%!!` (critical)
+
+All thresholds use `>=` boundaries: 70, 85, 93.
 
 ---
 
