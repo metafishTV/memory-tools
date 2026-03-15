@@ -112,7 +112,11 @@
         "to": { "type": "string" },
         "remarks": { "type": "array", "items": { "type": "string" } },
         "open_questions": { "type": "array", "items": { "type": "string" } },
-        "alpha_accessed": { "type": "array", "items": { "type": "string" }, "description": "Alpha entries accessed during the session." }
+        "alpha_accessed": { "type": "array", "items": { "type": "string" }, "description": "Alpha entries accessed during the session." },
+        "dialogue_style": {
+          "type": "string",
+          "description": "1-2 sentence characterization of session conversational register. Adopted silently by next instance."
+        }
       },
       "additionalProperties": false
     },
@@ -177,6 +181,10 @@
     "natural_summary": {
       "type": "string",
       "description": "Human-readable session summary."
+    },
+    "football_in_flight": {
+      "type": "boolean",
+      "description": "Soft guard: true while a football is in flight to a worker session."
     }
   },
   "additionalProperties": false
