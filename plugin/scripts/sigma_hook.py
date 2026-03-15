@@ -1368,6 +1368,18 @@ def main():
     user_prompt = hook_input.get('user_prompt', '')
     cwd = hook_input.get('cwd', os.getcwd())
 
+    # Load telemetry module (lazy, fail-silent)
+    _telemetry_mod = None
+    try:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        import importlib.util
+        _tel_spec = importlib.util.spec_from_file_location(
+            'telemetry', os.path.join(script_dir, 'telemetry.py'))
+        _telemetry_mod = importlib.util.module_from_spec(_tel_spec)
+        _tel_spec.loader.exec_module(_telemetry_mod)
+    except Exception:
+        pass
+
     # Quick exits
     if not user_prompt or len(user_prompt.strip()) < 8:
         emit_empty()
@@ -1401,10 +1413,88 @@ def main():
     if is_distill_active(buffer_dir):
         emit_empty()
 
+    # -----------------------------------------------------------------------
+    # HEADROOM CHECK — context pressure awareness (Layer 2)
+    # Runs on every firing. Injects warning on tier crossing only.
+    # -----------------------------------------------------------------------
+    headroom_injection = None
+    used_pct = hook_input.get('used_percentage')
+    if used_pct is not None and _telemetry_mod is not None:
+        try:
+            used_pct = float(used_pct)
+            current_tier = _telemetry_mod.tier_from_percentage(used_pct)
+
+            if current_tier is not None:
+                # Read last emitted tier
+                tier_path = os.path.join(buffer_dir, '.sigma_headroom_tier')
+                last_tier = None
+                try:
+                    with open(tier_path, 'r', encoding='utf-8') as f:
+                        last_tier = f.read().strip() or None
+                except (FileNotFoundError, OSError):
+                    pass
+
+                # Only inject on tier crossing
+                if current_tier != last_tier:
+                    # Write new tier
+                    try:
+                        with open(tier_path, 'w', encoding='utf-8') as f:
+                            f.write(current_tier)
+                    except OSError:
+                        pass
+
+                    # Compute cache ratio (supplementary)
+                    cr = None
+                    cache_read = hook_input.get('cache_read_input_tokens')
+                    cache_creation = hook_input.get('cache_creation_input_tokens')
+                    input_tok = hook_input.get('input_tokens')
+                    if cache_read is not None and cache_creation is not None and input_tok is not None:
+                        cr = _telemetry_mod.cache_ratio(
+                            float(cache_read), float(cache_creation), float(input_tok))
+
+                    # Emit telemetry event
+                    telemetry_event = {
+                        'event': 'headroom_warning',
+                        'context_pct': int(used_pct),
+                        'tier': current_tier,
+                    }
+                    if cr is not None:
+                        telemetry_event['cache_ratio'] = round(cr, 2)
+                    _telemetry_mod.emit(buffer_dir, telemetry_event)
+
+                    # Build injection message
+                    pct_int = int(used_pct)
+                    if current_tier == 'watch':
+                        headroom_injection = f"Context at {pct_int}%."
+                    elif current_tier == 'warn':
+                        headroom_injection = (
+                            f"Context at {pct_int}%. Consider compacting before "
+                            "starting heavy work. Directives are ready."
+                        )
+                    elif current_tier == 'critical':
+                        headroom_injection = (
+                            f"Context at {pct_int}% \u2014 compaction imminent. "
+                            "Run /compact now; directives will preserve active "
+                            "threads and vocabulary."
+                        )
+        except (ValueError, TypeError):
+            pass  # used_pct not a valid number — skip
+
+    def _emit_with_headroom(output):
+        """Prepend headroom warning to systemMessage if present."""
+        if headroom_injection and isinstance(output, dict):
+            existing = output.get('systemMessage', '')
+            if existing:
+                output['systemMessage'] = headroom_injection + '\n\n' + existing
+            else:
+                output['systemMessage'] = headroom_injection
+                output['suppressOutput'] = True
+        return output
+
     # Extract keywords (dynamic cap based on prompt size)
     keywords = extract_keywords(user_prompt)
     if not keywords:
-        emit(_with_resolution({}, resolution_due))
+        emit(_with_resolution(_emit_with_headroom({}), resolution_due))
 
     # GATE 0c: Grid lookup — pre-computed relevance grid (O(1) lookup)
     # Lite mode skips grid entirely (no relevance grid in lite).
@@ -1421,8 +1511,8 @@ def main():
             record_grid_adjustment(buffer_dir, cell_match.group(1), concept_ids,
                                     hit=True)
         injection = apply_spread_and_wholeness(buffer_dir, concept_ids, injection)
-        emit(_with_resolution(
-            {"suppressOutput": True, "systemMessage": injection},
+        emit(_with_resolution(_emit_with_headroom(
+            {"suppressOutput": True, "systemMessage": injection}),
             resolution_due))
 
     # GATE 1: Load suppress list (zero cost if file absent)
@@ -1479,8 +1569,8 @@ def main():
                                   max_inject=max_inject)
             if hot_hits:
                 injection = format_hot_hits(hot_hits)
-                emit(_with_resolution(
-                    {"suppressOutput": True, "systemMessage": injection},
+                emit(_with_resolution(_emit_with_headroom(
+                    {"suppressOutput": True, "systemMessage": injection}),
                     resolution_due))
 
     # -----------------------------------------------------------------------
@@ -1490,7 +1580,7 @@ def main():
     if is_lite or not concept_index:
         if not is_lite:
             record_prediction_error(buffer_dir, keywords, [], None)
-        emit(_with_resolution({}, resolution_due))
+        emit(_with_resolution(_emit_with_headroom({}), resolution_due))
 
     concept_matches = match_alpha_concepts(
         keywords, concept_index, suppress_list, idf_weights, threshold,
@@ -1546,10 +1636,10 @@ def main():
             keywords, concept_index, suppress_list, idf_weights,
             max(threshold, min_score), score_exact=score_exact)
         if ambiguity:
-            emit(_with_resolution(
-                {"suppressOutput": True, "systemMessage": ambiguity},
+            emit(_with_resolution(_emit_with_headroom(
+                {"suppressOutput": True, "systemMessage": ambiguity}),
                 resolution_due))
-        emit(_with_resolution({}, resolution_due))
+        emit(_with_resolution(_emit_with_headroom({}), resolution_due))
 
     injection = format_alpha_hits(concept_matches, sources_data)
 
@@ -1563,8 +1653,8 @@ def main():
     # Continuous score adjustment (W' — wholeness gradient)
     update_continuous_scores(buffer_dir, matched_ids, keywords, concept_index)
 
-    emit(_with_resolution(
-        {"suppressOutput": True, "systemMessage": injection},
+    emit(_with_resolution(_emit_with_headroom(
+        {"suppressOutput": True, "systemMessage": injection}),
         resolution_due))
 
 
