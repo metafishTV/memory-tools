@@ -38,6 +38,8 @@
 
 **Read first:** `schemas/hot-layer.schema.json` (lines 1-10) for `$schema` URI and draft version to match.
 
+**Note:** The schema is intentionally loose on `planner_payload.context` presence (optional regardless of throw type). The throw-type-specific constraint (heavy requires context, lite omits it) is enforced by `buffer_football.py pack`, not the schema. Similarly, `flagged_for_trunk` item `content` is `{"type": "object"}` with no further constraints — intentionally open-ended for v1 since item types (alpha_entry, decision, etc.) have different shapes.
+
 - [ ] **Step 1: Create `schemas/football.schema.json`**
 
 ```json
@@ -162,7 +164,7 @@ Expected: both `False`.
 
 - [ ] **Step 2: Add `dialogue_style` to `instance_notes.properties`**
 
-In `schemas/hot-layer.schema.json`, locate the `properties.instance_notes.properties` block. Insert after the last existing property inside that block (e.g., after `alpha_accessed`), before the closing `}` of `properties`. Do NOT add to `instance_notes.required` — it is optional.
+Read `schemas/hot-layer.schema.json`. Locate `properties.instance_notes.properties` and find the last existing property in that block. Insert after it, before the closing `}`. Do NOT add to `instance_notes.required` — it is optional.
 ```json
 "dialogue_style": {
   "type": "string",
@@ -172,7 +174,7 @@ In `schemas/hot-layer.schema.json`, locate the `properties.instance_notes.proper
 
 - [ ] **Step 3: Add `football_in_flight` to top-level properties**
 
-In `schemas/hot-layer.schema.json`, locate the top-level `properties` object (containing `schema_version`, `layer`, etc.). Insert after the last existing top-level property, before the closing `}` of `properties`. Do NOT add to the top-level `required` array — it is optional. The existing `"additionalProperties": false` will automatically permit it once declared here.
+Read `schemas/hot-layer.schema.json`. Locate the top-level `properties` object and find its last existing property. Insert after it, before the closing `}`. Do NOT add to the top-level `required` array — it is optional.
 ```json
 "football_in_flight": {
   "type": "boolean",
@@ -448,13 +450,24 @@ def cmd_status(args):
         session_type = "unknown"
     fp = _football(bd)
     football_state = throw_type = None
+    stale = False
     if fp.exists():
         with open(fp) as f:
             data = json.load(f)
         football_state = data.get("state")
         throw_type = data.get("throw_type")
-    print(json.dumps({"session_type": session_type, "football_state": football_state,
-                      "throw_type": throw_type, "buffer_dir": str(bd)}))
+        if football_state == "caught":
+            thrown_at = data.get("thrown_at", "")
+            try:
+                age = (datetime.now() - datetime.strptime(thrown_at, "%Y-%m-%d")).days
+                stale = age >= 3
+            except ValueError:
+                pass
+    result = {"session_type": session_type, "football_state": football_state,
+              "throw_type": throw_type, "buffer_dir": str(bd)}
+    if stale:
+        result["stale"] = True
+    print(json.dumps(result))
 
 
 def cmd_validate(args):
@@ -462,18 +475,14 @@ def cmd_validate(args):
     if not fp.exists():
         print(json.dumps({"valid": False, "error": f"not found: {fp}"}))
         sys.exit(1)
+    import jsonschema
     try:
-        import jsonschema
         with open(fp) as f:
             data = json.load(f)
         with open(SCHEMA_PATH) as f:
             schema = json.load(f)
         jsonschema.validate(data, schema)
         print(json.dumps({"valid": True}))
-    except ImportError:
-        # Fail closed: unknown validity is not the same as valid
-        print(json.dumps({"valid": None, "warning": "jsonschema not installed; validation skipped"}))
-        sys.exit(2)  # exit code 2 = inconclusive (distinct from 1 = invalid)
     except jsonschema.ValidationError as e:
         print(json.dumps({"valid": False, "error": e.message}))
         sys.exit(1)
@@ -494,12 +503,15 @@ def cmd_archive(args):
         sys.exit(1)
     with open(fp) as f:
         data = json.load(f)
+    data["state"] = "absorbed"
     desc = data.get("planner_payload", {}).get("thread", {}).get("description", "football")
     date = data.get("thrown_at", datetime.now().strftime("%Y-%m-%d"))
     archive_dir = fp.parent / "footballs"
     archive_dir.mkdir(exist_ok=True)
     dest = archive_dir / f"{date}-{_slug(desc)}.json"
-    shutil.move(str(fp), str(dest))
+    with open(dest, "w") as f:
+        json.dump(data, f, indent=2)
+    fp.unlink()
     print(json.dumps({"archived_to": str(dest)}))
 
 
@@ -584,7 +596,7 @@ def test_pack_increments_throw_count(planner_buffer_dir, valid_football, capsys)
 # ── pack — worker ─────────────────────────────────────────────────────────────
 
 def test_pack_heavy_worker_uses_micro(worker_buffer_dir, valid_football, capsys):
-    # valid_football fixture writes to buffer_dir; worker_buffer_dir IS buffer_dir
+    # Both fixtures chain from buffer_dir (same tmp_path) — worker has micro, valid_football has football.json
     with patch.object(buffer_football, 'find_buffer_dir', return_value=worker_buffer_dir):
         buffer_football.cmd_pack(_args(side="worker", type="heavy"))
     data = json.loads(valid_football.read_text())
@@ -765,14 +777,53 @@ def test_flag_accumulates_across_calls(worker_buffer_dir, capsys):
                 rationale=f"Term {i} coined during work"))
     micro = json.loads((worker_buffer_dir / "football-micro.json").read_text())
     assert len(micro["flagged_for_trunk"]) == 2
+
+
+# ── stale football detection ─────────────────────────────────────────────────
+
+def test_stale_football_detection(buffer_dir, capsys):
+    """Caught + 3 days old → stale flag in status output."""
+    from datetime import timedelta
+    stale_date = (datetime.now() - timedelta(days=4)).strftime("%Y-%m-%d")
+    fp = buffer_dir / "football.json"
+    fp.write_text(json.dumps({
+        "schema_version": 1, "mode": "football", "state": "caught",
+        "throw_type": "heavy", "thrown_by": "planner", "throw_count": 1,
+        "thrown_at": stale_date,
+        "planner_payload": {"thread": {"description": "Old task", "current_task": "x", "next_action": "y"}},
+        "worker_output": {}
+    }))
+    (buffer_dir / "handoff.json").write_text("{}")  # planner marker
+    with patch.object(buffer_football, 'find_buffer_dir', return_value=buffer_dir):
+        buffer_football.cmd_status(_args())
+    out = json.loads(capsys.readouterr().out)
+    assert out["football_state"] == "caught"
+    assert out.get("stale") is True
+
+
+def test_stale_football_fresh(buffer_dir, capsys):
+    """Caught + <3 days → no stale flag."""
+    fp = buffer_dir / "football.json"
+    fp.write_text(json.dumps({
+        "schema_version": 1, "mode": "football", "state": "caught",
+        "throw_type": "heavy", "thrown_by": "planner", "throw_count": 1,
+        "thrown_at": datetime.now().strftime("%Y-%m-%d"),
+        "planner_payload": {"thread": {"description": "Fresh task", "current_task": "x", "next_action": "y"}},
+        "worker_output": {}
+    }))
+    (buffer_dir / "handoff.json").write_text("{}")
+    with patch.object(buffer_football, 'find_buffer_dir', return_value=buffer_dir):
+        buffer_football.cmd_status(_args())
+    out = json.loads(capsys.readouterr().out)
+    assert out.get("stale", False) is False
 ```
 
 - [ ] **Step 2: Run to confirm failure**
 
 ```bash
-pytest tests/test_buffer_football.py -k "unpack or flag" -v 2>&1 | head -10
+pytest tests/test_buffer_football.py -k "unpack or flag or stale" -v 2>&1 | head -10
 ```
-Expected: `AttributeError` (functions not yet defined).
+Expected: `AttributeError` (functions not yet defined) or `stale` key missing.
 
 - [ ] **Step 3: Implement `cmd_unpack` and `cmd_flag` in `buffer_football.py`**
 
@@ -849,7 +900,7 @@ git commit -m "feat: buffer_football.py — unpack, flag (Task 5, TDD)"
 
 Note: `throw` is a directory name, not a Python identifier — no reserved-word conflict with the plugin's string-based dispatcher.
 
-- [ ] **Step 1: Create `plugin/skills/throw/SKILL.md`**
+- [ ] **Step 1: Create `plugin/skills/throw/SKILL.md`** (use the Write tool — the content below contains nested code fences that would be ambiguous if copy-pasted)
 
 ```markdown
 ---
@@ -1004,7 +1055,7 @@ git commit -m "feat: /buffer:throw skill — dyadic planner/worker throw"
 **Files:**
 - Create: `plugin/skills/catch/SKILL.md`
 
-- [ ] **Step 1: Create `plugin/skills/catch/SKILL.md`**
+- [ ] **Step 1: Create `plugin/skills/catch/SKILL.md`** (use the Write tool — nested code fences)
 
 ```markdown
 ---
@@ -1036,11 +1087,14 @@ Route:
 
 ## Worker Catch Branch
 
-### Step 2W: Unpack
+### Step 2W: Validate and Unpack
 
 ```bash
+python plugin/scripts/buffer_football.py validate --football .claude/buffer/football.json
 python plugin/scripts/buffer_football.py unpack --football .claude/buffer/football.json
 ```
+
+If `valid: false` → show error to user, STOP.
 
 Note `throw_count` — if `1`, heavy catch (first task). If `> 1`, lite catch (additional task).
 
@@ -1093,11 +1147,14 @@ python plugin/scripts/buffer_football.py flag \
 
 ## Planner Absorb Branch
 
-### Step 2P: Unpack and present worker output
+### Step 2P: Validate, unpack, and present worker output
 
 ```bash
+python plugin/scripts/buffer_football.py validate --football .claude/buffer/football.json
 python plugin/scripts/buffer_football.py unpack --football .claude/buffer/football.json
 ```
+
+If `valid: false` → show error to user, STOP.
 
 Present `worker_output` to the user:
 - **Completed:** list items
@@ -1188,7 +1245,7 @@ Change `"version": "3.1.0"` → `"version": "3.2.0"` in `plugin/.claude-plugin/p
 
 Find `buffer v3.1.0 |` in `plugin/skills/on/SKILL.md` Step 8 output template and change to `buffer v3.2.0 |`.
 
-Then, immediately after the `>7 days stale` note (around Step 8), add:
+Then, in Step 8, find the line `If the handoff is >7 days old, add:` and insert immediately after that paragraph:
 
 ```markdown
 If `football_in_flight` is `true` in the hot layer, add after the confirmation line: "Note: a football is in flight (thrown [thrown_at date]). Run `/buffer:catch` when the worker returns."
