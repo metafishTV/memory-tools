@@ -114,6 +114,86 @@ def cmd_archive(args):
     print(json.dumps({"archived_to": str(dest)}))
 
 
+def _pack_planner(args, bd, fp, throw_count, today):
+    existing = {}
+    if fp.exists():
+        with open(fp) as f:
+            existing = json.load(f)
+    thread = json.loads(args.thread) if args.thread else {}
+    payload = {"thread": thread}
+    if args.type == "heavy":
+        context = {"relevant_decisions": [], "alpha_refs": [], "orientation_fragment": "", "dialogue_style": ""}
+        hot = _hot(bd)
+        if hot.exists():
+            with open(hot) as f:
+                trunk = json.load(f)
+            o = trunk.get("orientation", {})
+            frags = [o.get("core_insight", ""), o.get("practical_warning", "")]
+            context["orientation_fragment"] = " ".join(f for f in frags if f)
+            context["dialogue_style"] = trunk.get("instance_notes", {}).get("dialogue_style", "")
+            context["relevant_decisions"] = trunk.get("recent_decisions", [])[:3]
+        context["alpha_refs"] = json.loads(args.alpha_refs) if args.alpha_refs else []
+        payload["context"] = context
+    data = {**existing,
+            "schema_version": 1, "mode": "football", "state": "in_flight",
+            "throw_type": args.type, "thrown_by": "planner",
+            "throw_count": throw_count, "thrown_at": today,
+            "planner_payload": payload,
+            "worker_output": existing.get("worker_output", {})}
+    with open(fp, "w") as f:
+        json.dump(data, f, indent=2)
+    print(json.dumps({"packed": True, "throw_count": throw_count}))
+
+
+def _pack_worker(args, bd, fp, throw_count, today):
+    micro = {}
+    micro_path = _micro(bd)
+    if micro_path.exists():
+        with open(micro_path) as f:
+            micro = json.load(f)
+    existing = {}
+    if fp.exists():
+        with open(fp) as f:
+            existing = json.load(f)
+    if args.type == "heavy":
+        worker_output = {
+            "completed": micro.get("completed_tasks", []),
+            "changes_made": micro.get("decisions_made", []),
+            "surprised_by": [],
+            "next_action": micro.get("active_task", ""),
+            "flagged_for_trunk": micro.get("flagged_for_trunk", []),
+        }
+    else:
+        worker_output = {
+            "completed": json.loads(args.completed) if args.completed else [],
+            "changes_made": json.loads(args.changes) if args.changes else [],
+            "surprised_by": [],
+            "next_action": args.next_action or "",
+            "flagged_for_trunk": micro.get("flagged_for_trunk", []),
+        }
+    existing.update({"throw_count": throw_count, "thrown_by": "worker",
+                     "throw_type": args.type, "thrown_at": today,
+                     "state": "returned", "worker_output": worker_output})
+    with open(fp, "w") as f:
+        json.dump(existing, f, indent=2)
+    print(json.dumps({"packed": True, "throw_count": throw_count}))
+
+
+def cmd_pack(args):
+    bd = _resolve_buffer(args.cwd)
+    fp = _football(bd)
+    existing_count = 0
+    if fp.exists():
+        with open(fp) as f:
+            existing_count = json.load(f).get("throw_count", 0)
+    throw_count = existing_count + 1
+    today = datetime.now().strftime("%Y-%m-%d")
+    if args.side == "planner":
+        _pack_planner(args, bd, fp, throw_count, today)
+    else:
+        _pack_worker(args, bd, fp, throw_count, today)
+
+
 def main():
     parser = argparse.ArgumentParser(description="buffer:football lifecycle")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -121,6 +201,13 @@ def main():
     p = sub.add_parser("status");   p.add_argument("--cwd"); p.set_defaults(func=cmd_status)
     p = sub.add_parser("validate"); p.add_argument("--football", required=True); p.set_defaults(func=cmd_validate)
     p = sub.add_parser("archive");  p.add_argument("--football", required=True); p.set_defaults(func=cmd_archive)
+
+    p = sub.add_parser("pack")
+    p.add_argument("--side", choices=["planner", "worker"], required=True)
+    p.add_argument("--type", choices=["heavy", "lite"], required=True)
+    p.add_argument("--cwd"); p.add_argument("--thread"); p.add_argument("--alpha-refs", dest="alpha_refs")
+    p.add_argument("--completed"); p.add_argument("--changes"); p.add_argument("--next-action", dest="next_action")
+    p.set_defaults(func=cmd_pack)
 
     args = parser.parse_args()
     args.func(args)

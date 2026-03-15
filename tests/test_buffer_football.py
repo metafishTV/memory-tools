@@ -168,3 +168,61 @@ def test_archive_short_description(buffer_dir, capsys):
     buffer_football.cmd_archive(_args(football=str(fp)))
     dest = Path(json.loads(capsys.readouterr().out)["archived_to"])
     assert "fix-bug" in dest.name
+
+
+# ── pack — planner heavy ──────────────────────────────────────────────────────
+
+def test_pack_heavy_planner_creates_football(planner_buffer_dir, capsys):
+    thread = {"description": "Build foo", "current_task": "Write tests", "next_action": "Run pytest"}
+    with patch.object(buffer_football, 'find_buffer_dir', return_value=planner_buffer_dir):
+        buffer_football.cmd_pack(_args(side="planner", type="heavy",
+                                       thread=json.dumps(thread), alpha_refs='["w:152"]'))
+    fp = planner_buffer_dir / "football.json"
+    assert fp.exists()
+    data = json.loads(fp.read_text())
+    assert data["mode"] == "football"
+    assert data["throw_count"] == 1
+    assert data["thrown_by"] == "planner"
+    assert data["state"] == "in_flight"
+    assert data["planner_payload"]["context"]["dialogue_style"] == "Casual and collaborative."
+    assert data["planner_payload"]["context"]["alpha_refs"] == ["w:152"]
+
+
+def test_pack_lite_planner_omits_context(planner_buffer_dir, valid_football, capsys):
+    thread = {"description": "Fix bug", "current_task": "Patch line 42", "next_action": "Run tests"}
+    with patch.object(buffer_football, 'find_buffer_dir', return_value=planner_buffer_dir):
+        buffer_football.cmd_pack(_args(side="planner", type="lite", thread=json.dumps(thread)))
+    data = json.loads(valid_football.read_text())
+    assert "context" not in data["planner_payload"]
+    assert data["state"] == "in_flight"
+    assert data["throw_count"] == 2   # incremented from existing 1
+
+
+def test_pack_increments_throw_count(planner_buffer_dir, valid_football, capsys):
+    thread = {"description": "Next task", "current_task": "Do it", "next_action": "Done"}
+    with patch.object(buffer_football, 'find_buffer_dir', return_value=planner_buffer_dir):
+        buffer_football.cmd_pack(_args(side="planner", type="lite", thread=json.dumps(thread)))
+    assert json.loads(valid_football.read_text())["throw_count"] == 2
+
+
+# ── pack — worker ─────────────────────────────────────────────────────────────
+
+def test_pack_heavy_worker_uses_micro(worker_buffer_dir, valid_football, capsys):
+    # Both fixtures chain from buffer_dir (same tmp_path) — worker has micro, valid_football has football.json
+    with patch.object(buffer_football, 'find_buffer_dir', return_value=worker_buffer_dir):
+        buffer_football.cmd_pack(_args(side="worker", type="heavy"))
+    data = json.loads(valid_football.read_text())
+    assert data["thrown_by"] == "worker"
+    assert data["state"] == "returned"
+    assert data["worker_output"]["completed"] == ["Wrote tests"]
+
+
+def test_pack_lite_worker_takes_args(worker_buffer_dir, valid_football, capsys):
+    with patch.object(buffer_football, 'find_buffer_dir', return_value=worker_buffer_dir):
+        buffer_football.cmd_pack(_args(side="worker", type="lite",
+                                       completed='["Wrote foo.py"]',
+                                       changes='["Added cmd_foo"]',
+                                       next_action="Run full suite"))
+    data = json.loads(valid_football.read_text())
+    assert data["worker_output"]["completed"] == ["Wrote foo.py"]
+    assert data["worker_output"]["next_action"] == "Run full suite"
