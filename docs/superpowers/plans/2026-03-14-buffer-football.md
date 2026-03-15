@@ -223,6 +223,7 @@ import importlib.util
 import os
 import pytest
 from argparse import Namespace
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -407,7 +408,6 @@ import importlib.util
 import json
 import os
 import re
-import shutil
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -783,7 +783,6 @@ def test_flag_accumulates_across_calls(worker_buffer_dir, capsys):
 
 def test_stale_football_detection(buffer_dir, capsys):
     """Caught + 3 days old → stale flag in status output."""
-    from datetime import timedelta
     stale_date = (datetime.now() - timedelta(days=4)).strftime("%Y-%m-%d")
     fp = buffer_dir / "football.json"
     fp.write_text(json.dumps({
@@ -871,7 +870,7 @@ Note: `--type` arg uses `dest="type_flag"` to avoid shadowing Python's `type` bu
 ```bash
 pytest tests/test_buffer_football.py -v
 ```
-Expected: all ~16 tests passing.
+Expected: all 18 tests passing.
 
 - [ ] **Step 5: Run full project test suite — no regressions**
 
