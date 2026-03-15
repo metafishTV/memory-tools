@@ -56,8 +56,11 @@ import time
 # Force UTF-8 on Windows
 # Guard: only wrap when running as main script, not when imported by tests
 if sys.platform == 'win32' and __name__ == '__main__':
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+    try:
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+    except AttributeError:
+        pass  # subprocess may not provide .buffer — fall through with default encoding
 
 # ---------------------------------------------------------------------------
 # Constants — static
@@ -248,7 +251,10 @@ def read_hook_input():
 
 def emit(output):
     """Write JSON output and exit."""
-    json.dump(output, sys.stdout, ensure_ascii=False)
+    try:
+        json.dump(output, sys.stdout, ensure_ascii=False)
+    except (OSError, ValueError):
+        pass  # broken pipe or encoding error — exit silently
     sys.exit(0)
 
 
