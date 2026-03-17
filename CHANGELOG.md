@@ -2,6 +2,13 @@
 
 All notable changes to buffer are documented here.
 
+## [buffer 3.3.1] - 2026-03-17
+
+### Bugfix: throw/catch skill visibility
+- **Fix throw/catch skill names** — skills had double-prefixed names (`buffer:buffer:throw`) preventing them from appearing in slash command list. Now correctly register as `/buffer:throw` and `/buffer:catch`.
+- **Sanitize examples** — replace project-specific references in SKILL.md examples and CONVENTIONS.md with generic placeholders for public release.
+- **Gitignore** — add `_distill_*` temp file patterns.
+
 ## [buffer 3.3.0] - 2026-03-14
 
 ### Headroom Check + Telemetry (Layers 2-3)
