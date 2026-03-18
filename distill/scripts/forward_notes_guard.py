@@ -32,7 +32,7 @@ def marker_valid(file_path: str) -> bool:
     if not os.path.exists(marker):
         return False
     try:
-        with open(marker, 'r', encoding='utf-8') as f:
+        with open(marker, 'r', encoding='utf-8-sig') as f:
             ts = float(f.read().strip())
         return (time.time() - ts) < MARKER_TTL
     except (ValueError, OSError):

@@ -66,7 +66,7 @@ SOURCE_PREFIX_MAP = {
 # ---------------------------------------------------------------------------
 
 def read_json(path):
-    with open(path, 'r', encoding='utf-8') as f:
+    with open(path, 'r', encoding='utf-8-sig') as f:
         return json.load(f)
 
 
@@ -696,7 +696,7 @@ def parse_referent_md(filepath):
     Returns (entry_type, entry_dict) or (None, None) on failure.
     """
     try:
-        with open(filepath, 'r', encoding='utf-8') as f:
+        with open(filepath, 'r', encoding='utf-8-sig') as f:
             content = f.read()
     except Exception:
         return None, None
@@ -753,7 +753,7 @@ def parse_referent_md(filepath):
 def parse_framework_md(filepath, group_name):
     """Parse a framework group .md file back into entry list."""
     try:
-        with open(filepath, 'r', encoding='utf-8') as f:
+        with open(filepath, 'r', encoding='utf-8-sig') as f:
             content = f.read()
     except Exception:
         return []

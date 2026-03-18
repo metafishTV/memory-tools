@@ -2,6 +2,17 @@
 
 All notable changes to buffer are documented here.
 
+## [buffer 3.5.0] - 2026-03-17
+
+### Reliability: encoding, BOM, locking, hollow pipe audit
+- **48-bug hollow pipe remediation** — worker football audit found and fixed 48 bugs across 10 classes (torn writes, TOCTOU, hollow pipes, orphaned markers, monotonicity, semantic narrowing, version drift, timezone skew, unbounded growth, idempotency) in 17 files.
+- **safe_io.py** — new shared I/O safety utility: atomic writes (temp+rename via `os.replace`), validated reads (`HollowFileError`), schema version forward-compat checks, marker TTL enforcement, atomic counters, cross-platform file locking.
+- **BOM-safe reads** — all JSON reads across 13 scripts now use `utf-8-sig` encoding, transparently stripping BOM if present (old Windows Notepad adds BOM to UTF-8 files). Writes remain `utf-8` (no BOM produced).
+- **Encoding fix** — `buffer_football.py` had 10 bare `open()` calls defaulting to cp1252 on Windows, crashing on any unicode content (em-dashes, etc.). All now specify encoding explicitly.
+- **File locking** — `safe_io.file_lock()` context manager using atomic `O_CREAT|O_EXCL` lock files with stale-lock detection. Wired into `atomic_read_modify_write_json` and `atomic_increment_counter` to prevent concurrent hook write races.
+- **Headroom telemetry rewired** — statusline detects tier crossings (it receives `context_window` data), sigma_hook injects warnings. Previously sigma_hook tried to do both but never received the data (hollow pipe).
+- **UTC standardization** — all timestamps across 25+ call sites in 8 files now use UTC.
+
 ## [buffer 3.4.0] - 2026-03-17
 
 ### Onboarding + Help

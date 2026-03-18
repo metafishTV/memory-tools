@@ -28,7 +28,7 @@ import json
 import re
 import sys
 from pathlib import Path
-from datetime import date
+from datetime import date, datetime, timezone
 
 if sys.platform == 'win32':
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
@@ -327,7 +327,7 @@ def build_forward_notes_registry(all_parsed: list[dict], existing_registry: dict
                     'source': parsed['label'],
                     'description': note['description'],
                     'status': 'candidate',
-                    'date': date.today().isoformat(),
+                    'date': datetime.now(timezone.utc).strftime('%Y-%m-%d'),
                 }
             # Track the highest number seen
             num_int = int(num.split('.')[1]) if '.' in num else 0
@@ -382,6 +382,18 @@ def main():
               file=sys.stderr)
 
     # --- Cross-reference against alpha index ---
+    # H9: warn if alpha/index.json exists with entries:{} but has other fields
+    alpha_index_path = alpha_dir / 'index.json'
+    if alpha_index_path.exists():
+        try:
+            _alpha_raw = json.loads(alpha_index_path.read_text(encoding='utf-8'))
+            _entries = _alpha_raw.get('entries', {})
+            if isinstance(_entries, dict) and not _entries and len(_alpha_raw) > 1:
+                print("warning: alpha/index.json has structure but entries is empty"
+                      " — possible data loss", file=sys.stderr)
+        except (json.JSONDecodeError, OSError):
+            pass
+
     distillation_labels, folder_names = load_alpha_sources(alpha_dir)
     print(f"\nAlpha index has {len(distillation_labels)} distillation refs, "
           f"{len(folder_names)} folders", file=sys.stderr)

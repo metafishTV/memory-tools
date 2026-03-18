@@ -36,6 +36,10 @@ def extract_figures(pdf_path, scan_data, outdir, manifest_path):
         if page.get_images(full=True):
             figure_pages.add(i)
 
+    if not figure_pages:
+        print("warning: no figure pages found in scan"
+              " — 0 figures will be extracted", file=sys.stderr)
+
     fig_counter = 0
     tab_counter = 0
     visual_counter = 0

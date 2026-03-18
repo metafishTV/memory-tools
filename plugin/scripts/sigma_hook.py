@@ -196,9 +196,9 @@ def find_buffer_dir(start_path):
 
 
 def read_json(path):
-    """Read JSON file, return dict or None."""
+    """Read JSON file, return dict or None. BOM-safe (utf-8-sig)."""
     try:
-        with open(path, 'r', encoding='utf-8') as f:
+        with open(path, 'r', encoding='utf-8-sig') as f:
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return None
@@ -223,7 +223,7 @@ def check_cooldown(buffer_dir, cooldown_seconds=COOLDOWN_SECONDS):
     marker = os.path.join(buffer_dir, '.sigma_last_fire')
     now = time.time()
     try:
-        with open(marker, 'r', encoding='utf-8') as f:
+        with open(marker, 'r', encoding='utf-8-sig') as f:
             last_fire = float(f.read().strip())
         if now - last_fire < cooldown_seconds:
             return False
@@ -276,7 +276,7 @@ def load_suppress_list(buffer_dir):
     """
     suppress_path = os.path.join(buffer_dir, '.sigma_suppress')
     try:
-        with open(suppress_path, 'r', encoding='utf-8') as f:
+        with open(suppress_path, 'r', encoding='utf-8-sig') as f:
             entries = set()
             for line in f:
                 line = line.strip()
@@ -311,9 +311,24 @@ def is_distill_active(buffer_dir):
     from the material being distilled, so matching against alpha would
     shotgun-inject the very concepts the distill process is already reading.
     Returns True if sigma should skip entirely.
+
+    TTL safety: if the marker is older than 4 hours, it is stale (distill
+    likely crashed). Clean it up and return False so sigma is not permanently
+    silenced.
     """
     marker = os.path.join(buffer_dir, '.distill_active')
-    return os.path.exists(marker)
+    if not os.path.exists(marker):
+        return False
+    try:
+        age = time.time() - os.path.getmtime(marker)
+        if age > 14400:  # 4 hours
+            os.remove(marker)
+            print("sigma: stale .distill_active marker (>4h) — cleaning up (distill may have crashed)",
+                  file=sys.stderr)
+            return False
+    except OSError:
+        return False
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -326,9 +341,24 @@ def is_hot_stale(buffer_dir):
     Looks for .buffer_loaded marker written by /buffer:on.
     If present, hot-level hints add no value — the AI already has the full hot layer.
     Returns True if hot should be skipped (buffer already loaded).
+
+    TTL safety: if the marker is older than 12 hours, it is stale (session
+    likely ended without /buffer:off). Clean it up and return True so
+    hot-layer hints fire again.
     """
     marker = os.path.join(buffer_dir, '.buffer_loaded')
-    return os.path.exists(marker)
+    if not os.path.exists(marker):
+        return False
+    try:
+        age = time.time() - os.path.getmtime(marker)
+        if age > 43200:  # 12 hours
+            os.remove(marker)
+            print("sigma: stale .buffer_loaded marker (>12h) — treating hot layer as stale",
+                  file=sys.stderr)
+            return True
+    except OSError:
+        return False
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -651,6 +681,7 @@ def check_compact_relay(buffer_dir, cwd):
     hot = read_json(os.path.join(buffer_dir, 'handoff.json'))
     if not hot:
         # Marker exists but hot layer gone — clean up and skip
+        print("sigma: compact relay skipped — handoff.json missing/corrupt", file=sys.stderr)
         try:
             os.remove(marker_path)
         except OSError:
@@ -706,7 +737,7 @@ def try_grid_lookup(buffer_dir, keywords):
         return None
 
     try:
-        with open(grid_path, 'r', encoding='utf-8') as f:
+        with open(grid_path, 'r', encoding='utf-8-sig') as f:
             grid = json.load(f)
     except (OSError, json.JSONDecodeError):
         return None
@@ -751,7 +782,7 @@ def try_grid_lookup(buffer_dir, keywords):
     return injection, concept_ids
 
 
-def record_grid_hit(buffer_dir, concept_ids):
+def record_grid_hit(buffer_dir, concept_ids, _safe_io=None):
     """Append grid hit to .sigma_hits log for temporal tracking.
 
     Format: one line per hit — "2026-03-09 w:62 w:125"
@@ -760,10 +791,10 @@ def record_grid_hit(buffer_dir, concept_ids):
     """
     if not concept_ids:
         return
-    from datetime import date
+    from datetime import datetime, timezone
     hits_path = os.path.join(buffer_dir, '.sigma_hits')
     try:
-        line = f"{date.today()} {' '.join(concept_ids)}\n"
+        line = f"{datetime.now(timezone.utc).strftime('%Y-%m-%d')} {' '.join(concept_ids)}\n"
         with open(hits_path, 'a', encoding='utf-8') as f:
             f.write(line)
     except OSError:
@@ -771,10 +802,10 @@ def record_grid_hit(buffer_dir, concept_ids):
 
     # Resonator: record co-activation pairs (concepts fired together)
     if len(concept_ids) >= 2:
-        _record_co_activation(buffer_dir, concept_ids)
+        _record_co_activation(buffer_dir, concept_ids, _safe_io=_safe_io)
 
 
-def _record_co_activation(buffer_dir, concept_ids):
+def _record_co_activation(buffer_dir, concept_ids, _safe_io=None):
     """Record co-activation pairs for resonator dynamics.
 
     Concepts that fire together in the same sigma hit are co-activated.
@@ -786,7 +817,7 @@ def _record_co_activation(buffer_dir, concept_ids):
     coact = {}
     try:
         if os.path.exists(coact_path):
-            with open(coact_path, 'r', encoding='utf-8') as f:
+            with open(coact_path, 'r', encoding='utf-8-sig') as f:
                 coact = json.load(f)
     except (json.JSONDecodeError, OSError):
         coact = {}
@@ -799,8 +830,11 @@ def _record_co_activation(buffer_dir, concept_ids):
             coact[key] = coact.get(key, 0) + 1
 
     try:
-        with open(coact_path, 'w', encoding='utf-8') as f:
-            json.dump(coact, f)
+        if _safe_io:
+            _safe_io.atomic_write_json(coact_path, coact)
+        else:
+            with open(coact_path, 'w', encoding='utf-8') as f:
+                json.dump(coact, f)
     except OSError:
         pass
 
@@ -819,13 +853,13 @@ def record_grid_adjustment(buffer_dir, cell_key, concept_ids, hit=True):
     if not concept_ids:
         return
 
-    from datetime import date
+    from datetime import datetime, timezone
     adj_path = os.path.join(buffer_dir, '.grid_adjustments')
     entry = json.dumps({
         'cell': cell_key,
         'concepts': concept_ids[:5],
         'type': 'confirm' if hit else 'disconfirm',
-        'date': str(date.today()),
+        'date': datetime.now(timezone.utc).strftime('%Y-%m-%d'),
     })
     try:
         with open(adj_path, 'a', encoding='utf-8') as f:
@@ -898,7 +932,7 @@ def _compute_dkl(current, previous):
     return max(0.0, dkl)
 
 
-def update_regime(buffer_dir, regime, matched_concept_keys, decay_rate=REGIME_DECAY):
+def update_regime(buffer_dir, regime, matched_concept_keys, decay_rate=REGIME_DECAY, _safe_io=None):
     """Update regime accumulator: boost matched, decay all, recompute entropy + D_KL."""
     activations = regime.get('activations', {})
     prev_activations = dict(activations)  # snapshot for D_KL
@@ -923,8 +957,11 @@ def update_regime(buffer_dir, regime, matched_concept_keys, decay_rate=REGIME_DE
     # Write back
     regime_path = os.path.join(buffer_dir, '.sigma_regime')
     try:
-        with open(regime_path, 'w', encoding='utf-8') as f:
-            json.dump(regime, f, indent=2)
+        if _safe_io:
+            _safe_io.atomic_write_json(regime_path, regime)
+        else:
+            with open(regime_path, 'w', encoding='utf-8') as f:
+                json.dump(regime, f, indent=2)
     except OSError:
         pass
 
@@ -964,9 +1001,9 @@ def record_prediction_error(buffer_dir, keywords, matched_concepts, grid_hit):
     if not keywords:
         return
 
-    from datetime import date
+    from datetime import datetime, timezone
     errors_path = os.path.join(buffer_dir, '.sigma_errors')
-    today = str(date.today())
+    today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
 
     lines = []
 
@@ -1039,7 +1076,7 @@ def compute_spread(concept_ids, adjacency, max_spread=2, coactivation=None):
     return ranked[:max_spread]
 
 
-def update_wholeness(buffer_dir, new_concept_ids, adjacency, edge_count=0):
+def update_wholeness(buffer_dir, new_concept_ids, adjacency, edge_count=0, _safe_io=None):
     """Incrementally update wholeness W after new concept activation.
 
     delta_W = count of already-active neighbors for each new activation.
@@ -1073,12 +1110,15 @@ def update_wholeness(buffer_dir, new_concept_ids, adjacency, edge_count=0):
     if w_potential > 0:
         state['W_ratio'] = round(state['W'] / w_potential, 4)
 
-    from datetime import date
-    state['last_updated'] = str(date.today())
+    from datetime import datetime, timezone
+    state['last_updated'] = datetime.now(timezone.utc).strftime('%Y-%m-%d')
 
     try:
-        with open(wholeness_path, 'w', encoding='utf-8') as f:
-            json.dump(state, f, indent=2)
+        if _safe_io:
+            _safe_io.atomic_write_json(wholeness_path, state)
+        else:
+            with open(wholeness_path, 'w', encoding='utf-8') as f:
+                json.dump(state, f, indent=2)
     except OSError:
         pass
 
@@ -1227,7 +1267,7 @@ def check_ambiguity_signal(keywords, concept_index, suppress_list,
     return None
 
 
-def update_continuous_scores(buffer_dir, concept_ids, keywords, concept_index):
+def update_continuous_scores(buffer_dir, concept_ids, keywords, concept_index, _safe_io=None):
     """Update continuous scores (W') — the wholeness gradient.
 
     Each sigma hit nudges concept scores incrementally:
@@ -1263,13 +1303,16 @@ def update_continuous_scores(buffer_dir, concept_ids, keywords, concept_index):
         scores['__W_prime'] = w_prime
 
     try:
-        with open(scores_path, 'w', encoding='utf-8') as f:
-            json.dump(scores, f)
+        if _safe_io:
+            _safe_io.atomic_write_json(scores_path, scores)
+        else:
+            with open(scores_path, 'w', encoding='utf-8') as f:
+                json.dump(scores, f)
     except OSError:
         pass
 
 
-def apply_spread_and_wholeness(buffer_dir, concept_ids, injection):
+def apply_spread_and_wholeness(buffer_dir, concept_ids, injection, _safe_io=None):
     """Apply spreading activation and wholeness update to an injection.
 
     Reads .cw_adjacency cache (written by alpha-reinforce) and
@@ -1294,14 +1337,14 @@ def apply_spread_and_wholeness(buffer_dir, concept_ids, injection):
     spread = compute_spread(concept_ids, adjacency, coactivation=coactivation)
     if spread:
         spread_ids = [sid for sid, _ in spread]
-        record_grid_hit(buffer_dir, spread_ids)
+        record_grid_hit(buffer_dir, spread_ids, _safe_io=_safe_io)
         spread_parts = [
             f"{sid} {concepts_lookup.get(sid, '?')}" for sid, _ in spread
         ]
         injection += ' | spread: ' + ' | '.join(spread_parts)
 
     # Incremental wholeness update
-    update_wholeness(buffer_dir, concept_ids, adjacency, edge_count)
+    update_wholeness(buffer_dir, concept_ids, adjacency, edge_count, _safe_io=_safe_io)
 
     return injection
 
@@ -1312,9 +1355,15 @@ def apply_spread_and_wholeness(buffer_dir, concept_ids, injection):
 
 TICK_THRESHOLD = 50  # Flag resolution_due every N messages
 
-def _increment_tick(buffer_dir):
+def _increment_tick(buffer_dir, _safe_io=None):
     """Increment per-message tick counter. Lightweight (~1ms)."""
     ticks_path = os.path.join(buffer_dir, '.sigma_ticks')
+    if _safe_io:
+        try:
+            _safe_io.atomic_increment_counter(ticks_path)
+        except OSError:
+            pass
+        return
     count = 0
     try:
         if os.path.exists(ticks_path):
@@ -1330,7 +1379,7 @@ def _increment_tick(buffer_dir):
         pass
 
 
-def _check_resolution_due(buffer_dir):
+def _check_resolution_due(buffer_dir, _safe_io=None):
     """Check if tick threshold reached. Returns True and resets if so."""
     ticks_path = os.path.join(buffer_dir, '.sigma_ticks')
     try:
@@ -1338,8 +1387,11 @@ def _check_resolution_due(buffer_dir):
             with open(ticks_path, 'r') as f:
                 count = int(f.read().strip() or '0')
             if count >= TICK_THRESHOLD:
-                with open(ticks_path, 'w') as f:
-                    f.write('0')
+                if _safe_io:
+                    _safe_io.atomic_write_text(ticks_path, '0')
+                else:
+                    with open(ticks_path, 'w') as f:
+                        f.write('0')
                 return True
     except (ValueError, OSError):
         pass
@@ -1371,21 +1423,20 @@ def _with_resolution(output, resolution_due):
 # ---------------------------------------------------------------------------
 
 def main():
+    # Import safe_io for atomic writes (fail-silent — fall back to direct writes)
+    _safe_io = None
+    try:
+        import importlib.util
+        _sio_spec = importlib.util.spec_from_file_location(
+            'safe_io', os.path.join(os.path.dirname(os.path.abspath(__file__)), 'safe_io.py'))
+        _safe_io = importlib.util.module_from_spec(_sio_spec)
+        _sio_spec.loader.exec_module(_safe_io)
+    except Exception:
+        pass
+
     hook_input = read_hook_input()
     user_prompt = hook_input.get('user_prompt', '')
     cwd = hook_input.get('cwd', os.getcwd())
-
-    # Load telemetry module (lazy, fail-silent)
-    _telemetry_mod = None
-    try:
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        import importlib.util
-        _tel_spec = importlib.util.spec_from_file_location(
-            'telemetry', os.path.join(script_dir, 'telemetry.py'))
-        _telemetry_mod = importlib.util.module_from_spec(_tel_spec)
-        _tel_spec.loader.exec_module(_telemetry_mod)
-    except Exception:
-        pass
 
     # Quick exits
     if not user_prompt or len(user_prompt.strip()) < 8:
@@ -1409,8 +1460,8 @@ def main():
     # TICK COUNTER: Increment per-message counter for periodic resolution checks
     # Lite mode skips ticks — no consumer (resolution checks are full-mode only)
     if not is_lite:
-        _increment_tick(buffer_dir)
-    resolution_due = _check_resolution_due(buffer_dir) if not is_lite else False
+        _increment_tick(buffer_dir, _safe_io=_safe_io)
+    resolution_due = _check_resolution_due(buffer_dir, _safe_io=_safe_io) if not is_lite else False
 
     # GATE 0a: Post-compaction relay — inject buffer summary if marker present
     # Runs in both lite and full mode (compact marker is shared infrastructure)
@@ -1421,71 +1472,30 @@ def main():
         emit_empty()
 
     # -----------------------------------------------------------------------
-    # HEADROOM CHECK — context pressure awareness (Layer 2)
-    # Runs on every firing. Injects warning on tier crossing only.
+    # HEADROOM INJECTION — read tier file written by statusline (Layer 2)
+    # Statusline detects tier crossings (it gets context_window data).
+    # Sigma hook reads the tier and injects a warning if present.
     # -----------------------------------------------------------------------
     headroom_injection = None
-    used_pct = hook_input.get('used_percentage')
-    if used_pct is not None and _telemetry_mod is not None:
-        try:
-            used_pct = float(used_pct)
-            current_tier = _telemetry_mod.tier_from_percentage(used_pct)
-
-            if current_tier is not None:
-                # Read last emitted tier
-                tier_path = os.path.join(buffer_dir, '.sigma_headroom_tier')
-                last_tier = None
-                try:
-                    with open(tier_path, 'r', encoding='utf-8') as f:
-                        last_tier = f.read().strip() or None
-                except (FileNotFoundError, OSError):
-                    pass
-
-                # Only inject on tier crossing
-                if current_tier != last_tier:
-                    # Write tier first so crossing is never double-emitted even if telemetry fails
-                    try:
-                        with open(tier_path, 'w', encoding='utf-8') as f:
-                            f.write(current_tier)
-                    except OSError:
-                        pass
-
-                    # Compute cache ratio (supplementary)
-                    cr = None
-                    cache_read = hook_input.get('cache_read_input_tokens')
-                    cache_creation = hook_input.get('cache_creation_input_tokens')
-                    input_tok = hook_input.get('input_tokens')
-                    if cache_read is not None and cache_creation is not None and input_tok is not None:
-                        cr = _telemetry_mod.cache_ratio(
-                            float(cache_read), float(cache_creation), float(input_tok))
-
-                    # Emit telemetry event
-                    telemetry_event = {
-                        'event': 'headroom_warning',
-                        'context_pct': int(used_pct),
-                        'tier': current_tier,
-                    }
-                    if cr is not None:
-                        telemetry_event['cache_ratio'] = round(cr, 2)
-                    _telemetry_mod.emit(buffer_dir, telemetry_event)
-
-                    # Build injection message
-                    pct_int = int(used_pct)
-                    if current_tier == 'watch':
-                        headroom_injection = f"Context at {pct_int}%."
-                    elif current_tier == 'warn':
-                        headroom_injection = (
-                            f"Context at {pct_int}%. Consider compacting before "
-                            "starting heavy work. Directives are ready."
-                        )
-                    elif current_tier == 'critical':
-                        headroom_injection = (
-                            f"Context at {pct_int}% \u2014 compaction imminent. "
-                            "Run /compact now; directives will preserve active "
-                            "threads and vocabulary."
-                        )
-        except (ValueError, TypeError):
-            pass  # used_pct not a valid number — skip
+    tier_path = os.path.join(buffer_dir, '.sigma_headroom_tier')
+    try:
+        with open(tier_path, 'r', encoding='utf-8-sig') as f:
+            current_tier = f.read().strip() or None
+        if current_tier == 'watch':
+            headroom_injection = "Context at watch tier (70%+)."
+        elif current_tier == 'warn':
+            headroom_injection = (
+                "Context at warn tier (85%+). Consider compacting before "
+                "starting heavy work. Directives are ready."
+            )
+        elif current_tier == 'critical':
+            headroom_injection = (
+                "Context at critical tier (93%+) \u2014 compaction imminent. "
+                "Run /compact now; directives will preserve active "
+                "threads and vocabulary."
+            )
+    except (FileNotFoundError, OSError):
+        pass
 
     def _emit_with_headroom(output):
         """Prepend headroom warning to systemMessage if present."""
@@ -1512,14 +1522,14 @@ def main():
     grid_result = None if is_lite else try_grid_lookup(buffer_dir, keywords)
     if grid_result is not None:
         injection, concept_ids = grid_result
-        record_grid_hit(buffer_dir, concept_ids)
+        record_grid_hit(buffer_dir, concept_ids, _safe_io=_safe_io)
         # Incremental grid adjustment: confirm this cell hit
         # Extract cell key from injection format "sigma grid [cell_key]: ..."
         cell_match = re.search(r'sigma grid \[([^\]]+)\]', injection)
         if cell_match:
             record_grid_adjustment(buffer_dir, cell_match.group(1), concept_ids,
                                     hit=True)
-        injection = apply_spread_and_wholeness(buffer_dir, concept_ids, injection)
+        injection = apply_spread_and_wholeness(buffer_dir, concept_ids, injection, _safe_io=_safe_io)
         emit(_with_resolution(_emit_with_headroom(
             {"suppressOutput": True, "systemMessage": injection}),
             resolution_due))
@@ -1598,7 +1608,7 @@ def main():
         regime=regime)
 
     # CW-boost pass: uplift neighbors of matched concepts, splash saturation
-    if concept_matches and adj_data:
+    if concept_matches and adj_data and adj_data.get('adjacency'):
         # Build scores dict for boost pass
         boost_scores = {
             key: (ids, sc) for key, ids, sc in concept_matches
@@ -1638,7 +1648,7 @@ def main():
 
     # Update regime accumulator with matched concept keys
     matched_keys = [key for key, _, _ in concept_matches]
-    update_regime(buffer_dir, regime, matched_keys)
+    update_regime(buffer_dir, regime, matched_keys, _safe_io=_safe_io)
 
     if not concept_matches:
         # Ambiguity signal: near-threshold diagnostic
@@ -1658,10 +1668,10 @@ def main():
         ids[0] for _, ids, _ in concept_matches
         if isinstance(ids, list) and ids
     ]
-    injection = apply_spread_and_wholeness(buffer_dir, matched_ids, injection)
+    injection = apply_spread_and_wholeness(buffer_dir, matched_ids, injection, _safe_io=_safe_io)
 
     # Continuous score adjustment (W' — wholeness gradient)
-    update_continuous_scores(buffer_dir, matched_ids, keywords, concept_index)
+    update_continuous_scores(buffer_dir, matched_ids, keywords, concept_index, _safe_io=_safe_io)
 
     emit(_with_resolution(_emit_with_headroom(
         {"suppressOutput": True, "systemMessage": injection}),

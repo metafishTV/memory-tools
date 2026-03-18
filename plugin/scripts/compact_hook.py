@@ -16,7 +16,7 @@ import os
 import io
 import json
 from pathlib import Path
-from datetime import date
+from datetime import datetime, timezone
 
 # Force UTF-8 on Windows (buffer data contains unicode)
 # Guard: only wrap when running as main script, not when imported by sigma_hook
@@ -56,19 +56,32 @@ def find_buffer_dir(start_path):
 
 
 def read_json(path):
-    """Read JSON file, return dict or None."""
+    """Read JSON file, return dict or None. BOM-safe (utf-8-sig)."""
     try:
-        with open(path, 'r', encoding='utf-8') as f:
+        with open(path, 'r', encoding='utf-8-sig') as f:
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return None
 
 
 def write_json(path, data):
-    """Write dict to JSON file."""
-    with open(path, 'w', encoding='utf-8') as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-        f.write('\n')
+    """Write dict to JSON file (atomic: temp-file-then-rename)."""
+    import tempfile
+    dir_name = os.path.dirname(os.path.abspath(path))
+    fd, tmp_path = tempfile.mkstemp(dir=dir_name, suffix='.tmp')
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+            f.write('\n')
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def read_hook_input():
@@ -92,7 +105,7 @@ def generate_directive_context(buffer_dir):
 
     # Read directives file
     try:
-        with open(directives_path, 'r', encoding='utf-8') as f:
+        with open(directives_path, 'r', encoding='utf-8-sig') as f:
             directives_text = f.read().strip()
     except (FileNotFoundError, OSError):
         return ''
@@ -122,7 +135,7 @@ def generate_directive_context(buffer_dir):
     depth = 0
     session_active_path = os.path.join(buffer_dir, '.session_active')
     try:
-        with open(session_active_path, 'r', encoding='utf-8') as f:
+        with open(session_active_path, 'r', encoding='utf-8-sig') as f:
             session_data = json.load(f)
             depth = int(session_data.get('off_count', 0))
     except (FileNotFoundError, json.JSONDecodeError, OSError, ValueError, TypeError):
@@ -210,7 +223,7 @@ def detect_layer_limits(cwd):
         if not os.path.exists(filepath):
             continue
         try:
-            with open(filepath, 'r', encoding='utf-8') as f:
+            with open(filepath, 'r', encoding='utf-8-sig') as f:
                 content = f.read()
             for layer in ('hot', 'warm', 'cold'):
                 match = re.search(
@@ -247,7 +260,7 @@ def cmd_pre_compact(hook_input):
         sys.exit(0)  # Cannot block compaction, just skip
 
     # Update date
-    today = date.today().isoformat()
+    today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
     if 'session_meta' not in hot:
         hot['session_meta'] = {}
     hot['session_meta']['date'] = today
@@ -309,7 +322,7 @@ def cmd_pre_compact(hook_input):
         off_count = 0
         session_active_path = os.path.join(buffer_dir, '.session_active')
         try:
-            with open(session_active_path, 'r', encoding='utf-8') as f:
+            with open(session_active_path, 'r', encoding='utf-8-sig') as f:
                 sa = json.load(f)
                 off_count = int(sa.get('off_count', 0))
         except (FileNotFoundError, json.JSONDecodeError, OSError, ValueError):
@@ -323,7 +336,7 @@ def cmd_pre_compact(hook_input):
         headroom_tier = None
         tier_path = os.path.join(buffer_dir, '.sigma_headroom_tier')
         try:
-            with open(tier_path, 'r', encoding='utf-8') as f:
+            with open(tier_path, 'r', encoding='utf-8-sig') as f:
                 headroom_tier = f.read().strip() or None
         except (FileNotFoundError, OSError):
             pass
@@ -369,7 +382,7 @@ def detect_distill_in_progress(cwd):
         result['extracted_text'] = str(text_file)
         # Read first few lines to identify the source
         try:
-            with open(text_file, 'r', encoding='utf-8', errors='replace') as f:
+            with open(text_file, 'r', encoding='utf-8-sig', errors='replace') as f:
                 header_lines = []
                 for i, line in enumerate(f):
                     if i >= 10:
@@ -531,7 +544,7 @@ def build_compact_summary(hot, buffer_dir, hot_max, warm_max, cold_max):
     briefing_path = os.path.join(buffer_dir, 'briefing.md')
     if os.path.isfile(briefing_path):
         try:
-            with open(briefing_path, 'r', encoding='utf-8') as f:
+            with open(briefing_path, 'r', encoding='utf-8-sig') as f:
                 briefing_text = f.read().strip()
             if briefing_text:
                 lines.append("## Session Briefing (from last handoff)")
@@ -552,7 +565,7 @@ def build_compact_summary(hot, buffer_dir, hot_max, warm_max, cold_max):
     if os.path.isfile(beta_path):
         try:
             beta_entries = []
-            with open(beta_path, 'r', encoding='utf-8') as f:
+            with open(beta_path, 'r', encoding='utf-8-sig') as f:
                 for line in f:
                     line = line.strip()
                     if line:
@@ -617,12 +630,12 @@ def build_compact_summary(hot, buffer_dir, hot_max, warm_max, cold_max):
     warm_lines = 0
     cold_lines = 0
     try:
-        with open(warm_path, 'r', encoding='utf-8') as f:
+        with open(warm_path, 'r', encoding='utf-8-sig') as f:
             warm_lines = len(f.readlines())
     except (FileNotFoundError, OSError):
         pass
     try:
-        with open(cold_path, 'r', encoding='utf-8') as f:
+        with open(cold_path, 'r', encoding='utf-8-sig') as f:
             cold_lines = len(f.readlines())
     except (FileNotFoundError, OSError):
         pass
@@ -632,7 +645,7 @@ def build_compact_summary(hot, buffer_dir, hot_max, warm_max, cold_max):
     alpha_summary = ''
     if os.path.exists(alpha_idx_path):
         try:
-            with open(alpha_idx_path, 'r', encoding='utf-8') as f:
+            with open(alpha_idx_path, 'r', encoding='utf-8-sig') as f:
                 alpha_idx = json.load(f)
             alpha_s = alpha_idx.get('summary', {})
             fw = alpha_s.get('total_framework', 0)
@@ -720,6 +733,22 @@ def cmd_post_compact(hook_input):
     if not os.path.exists(marker_path):
         json.dump(empty_output, sys.stdout, ensure_ascii=False)
         sys.exit(0)
+
+    # TTL check: if marker is older than 24 hours, it's stale
+    import time
+    try:
+        marker_age = time.time() - os.path.getmtime(marker_path)
+        if marker_age > 86400:  # 24 hours
+            print("compact: stale .compact_marker found (>24h old) — cleaning up",
+                  file=sys.stderr)
+            try:
+                os.remove(marker_path)
+            except OSError:
+                pass
+            json.dump(empty_output, sys.stdout, ensure_ascii=False)
+            sys.exit(0)
+    except OSError:
+        pass
 
     hot_path = os.path.join(buffer_dir, 'handoff.json')
     hot = read_json(hot_path)

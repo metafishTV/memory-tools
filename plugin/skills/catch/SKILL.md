@@ -75,6 +75,23 @@ Present to yourself:
 
 Tell the user: "Worker micro-session initialized. Ready to work on: [current_task]"
 
+### Step 7W: Play the full field
+
+You have access to every skill, agent, and tool available in this session. **Use them proactively** — do not wait for the user to ask. The planner delegated this task because they trust you to execute autonomously with the best available plays. Treat every available capability as part of your toolkit.
+
+**Mandatory plays** (use these when the situation calls for it, without asking):
+- **Code review**: After completing a significant implementation chunk, deploy the `superpowers:code-reviewer` agent or the `feature-dev:code-reviewer` agent to review your own work before moving on. Do not ship unreviewed code back to the planner.
+- **Parallel agents**: When the task has independent subtasks (research, fixes across different files, audits), dispatch them in parallel via the Agent tool. Do not serialize work that can be parallelized.
+- **Test-driven development**: When implementing features or fixes, write tests first or run existing tests after changes. Use `superpowers:test-driven-development` or `superpowers:verification-before-completion` as appropriate.
+- **Plans for complex work**: If the task is multi-step and non-trivial, use `superpowers:writing-plans` or `superpowers:executing-plans` to structure the work before diving in.
+
+**Situational plays** (use judgment):
+- **Systematic debugging**: If you hit a bug or unexpected test failure, use `superpowers:systematic-debugging` rather than guessing.
+- **Brainstorming**: If the task involves design decisions with trade-offs, use `superpowers:brainstorming` to explore options before committing.
+- **Codebase exploration**: Use the `Explore` agent type for deep codebase understanding when you need to trace dependencies or understand architecture before making changes.
+
+**Operating principle**: The planner is not watching over your shoulder. They will see your results when you throw the football back. Make every decision as if you are the senior engineer on this task — because you are. Use the tools that a senior engineer would use: review your own code, test your changes, parallelize where possible, and flag anything surprising for the planner's attention.
+
 Flag items for trunk carry-over at any time using:
 ```bash
 python plugin/scripts/buffer_football.py flag \

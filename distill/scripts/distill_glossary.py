@@ -61,7 +61,7 @@ def parse_glossary(text: str) -> list[str]:
 def cmd_template(args):
     """Output glossary template with existing terms for duplicate checking."""
     try:
-        with open(args.skill_md, 'r', encoding='utf-8') as f:
+        with open(args.skill_md, 'r', encoding='utf-8-sig') as f:
             text = f.read()
     except OSError as e:
         print(f"Error reading {args.skill_md}: {e}")

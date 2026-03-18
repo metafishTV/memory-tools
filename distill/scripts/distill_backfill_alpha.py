@@ -587,11 +587,18 @@ def run_backfill(alpha_dir: Path,
     all_entries = index.get('entries', {})
     # --- 2. Parse all distillation files ---
     distillations: dict[str, dict] = {}
+    skipped_empty = 0
     if distill_dir.exists():
         for md_file in sorted(distill_dir.glob('*.md')):
             parsed = parse_distillation(md_file)
+            if not parsed['key_concepts']:
+                print(f"WARNING: {md_file.name} has zero key_concepts — skipping",
+                      file=sys.stderr)
+                skipped_empty += 1
+                continue
             distillations[parsed['label']] = parsed
-    print(f"Parsed {len(distillations)} distillation files", file=sys.stderr)
+    print(f"Parsed {len(distillations)} distillation files"
+          f" ({skipped_empty} skipped: empty)", file=sys.stderr)
 
     # --- 3. Parse all interpretation files ---
     interpretations: dict[str, dict] = {}

@@ -172,8 +172,8 @@ class TestPreCompactMarker:
         assert marker.exists()
 
     def test_marker_contains_date_string(self, buffer_dir, hot_minimal):
-        """The .compact_marker file content is today's date in ISO format."""
-        from datetime import date as dt_date
+        """The .compact_marker file content is today's date in ISO format (UTC)."""
+        from datetime import datetime, timezone
 
         from compact_hook import cmd_pre_compact
 
@@ -184,8 +184,8 @@ class TestPreCompactMarker:
 
         marker = buffer_dir / '.compact_marker'
         content = marker.read_text().strip()
-        # Verify it is a valid ISO date string matching today
-        assert content == dt_date.today().isoformat()
+        # Verify it is a valid ISO date string matching today (UTC)
+        assert content == datetime.now(timezone.utc).strftime('%Y-%m-%d')
 
 
 # ---------------------------------------------------------------------------

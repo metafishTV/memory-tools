@@ -49,7 +49,7 @@ def parse_section_headers(doc_path):
     """Extract ## §5.NN Title lines from the design doc (§5.19–§5.69)."""
     pattern = re.compile(r'^## §(5\.\d+)\s+(.+)$')
     sections = {}
-    with open(doc_path, 'r', encoding='utf-8') as f:
+    with open(doc_path, 'r', encoding='utf-8-sig') as f:
         for line in f:
             m = pattern.match(line.strip())
             if m:
@@ -126,7 +126,7 @@ def main():
 
     # Load existing registry
     if reg_path.exists():
-        with open(reg_path, 'r', encoding='utf-8') as f:
+        with open(reg_path, 'r', encoding='utf-8-sig') as f:
             existing = json.load(f)
         existing_notes = existing.get('notes', {})
         print(f"Existing registry: {len(existing_notes)} entries, next_number={existing.get('next_number')}")

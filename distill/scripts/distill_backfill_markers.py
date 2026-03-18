@@ -272,7 +272,8 @@ def update_alpha_index(alpha_dir, distilled_dir, file_results, dry_run=False):
                 updated += 1
 
     if not dry_run and updated > 0:
-        index["last_updated"] = str(__import__("datetime").date.today())
+        from datetime import datetime, timezone
+        index["last_updated"] = datetime.now(timezone.utc).strftime('%Y-%m-%d')
         with open(index_path, "w", encoding="utf-8") as f:
             json.dump(index, f, indent=2, ensure_ascii=False)
 

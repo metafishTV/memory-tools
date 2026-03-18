@@ -41,9 +41,9 @@ def match_cwd_to_project(cwd, repo_root):
 
 
 def _read_json(path):
-    """Read JSON file, return dict or None."""
+    """Read JSON file, return dict or None. BOM-safe (utf-8-sig)."""
     try:
-        with open(path, 'r', encoding='utf-8') as f:
+        with open(path, 'r', encoding='utf-8-sig') as f:
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return None
@@ -87,6 +87,11 @@ def read_registry(path=None):
                 proj['repo_root'] = _infer_repo_root(proj['buffer_path'])
         data['schema_version'] = 2
 
+    if version > 2:
+        import sys as _sys
+        print(f"buffer_utils: projects.json schema_version {version} > 2 — some features may not work",
+              file=_sys.stderr)
+
     return data
 
 
@@ -109,7 +114,8 @@ def find_buffer_dir(cwd, registry_path=None):
     for _name, proj in registry.get('projects', {}).items():
         repo_root = proj.get('repo_root', '')
         buffer_path = proj.get('buffer_path', '')
-        if repo_root and match_cwd_to_project(cwd, repo_root):
+        if repo_root and (match_cwd_to_project(cwd, repo_root)
+                          or match_cwd_to_project(repo_root, cwd)):
             if os.path.isdir(buffer_path) and os.path.isfile(
                     os.path.join(buffer_path, 'handoff.json')):
                 return buffer_path

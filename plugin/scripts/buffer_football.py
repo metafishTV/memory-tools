@@ -8,7 +8,7 @@ import json
 import os
 import re
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Load buffer_utils via importlib (same pattern as compact_hook.py)
@@ -18,6 +18,25 @@ _spec = importlib.util.spec_from_file_location(
 _utils = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_utils)
 find_buffer_dir = _utils.find_buffer_dir
+
+# Load safe_io via importlib (same pattern)
+try:
+    _sio_spec = importlib.util.spec_from_file_location(
+        'safe_io', os.path.join(_script_dir, 'safe_io.py'))
+    _sio = importlib.util.module_from_spec(_sio_spec)
+    _sio_spec.loader.exec_module(_sio)
+    atomic_write_json = _sio.atomic_write_json
+    check_schema_version = _sio.check_schema_version
+    SchemaVersionError = _sio.SchemaVersionError
+except Exception:
+    # Fallback: if safe_io is unavailable, define stubs so the script doesn't break
+    def atomic_write_json(path, data, indent=2):
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=indent)
+    def check_schema_version(data, max_supported, path='<unknown>'):
+        return data.get('schema_version', 1) if isinstance(data, dict) else 1
+    class SchemaVersionError(ValueError):
+        pass
 
 SCHEMA_PATH = Path(_script_dir).parent.parent / "schemas" / "football.schema.json"
 
@@ -52,11 +71,21 @@ def cmd_status(args):
     stale = False
     if fp.exists():
         try:
-            with open(fp) as f:
+            with open(fp, encoding='utf-8-sig') as f:
                 data = json.load(f)
         except (json.JSONDecodeError, OSError):
             data = {}
-        football_state = data.get("state")
+        # V2: schema version check
+        try:
+            check_schema_version(data, max_supported=1, path=str(fp))
+        except SchemaVersionError as e:
+            print(f"warning: {e}", file=sys.stderr)
+        # H3: empty dict is corrupt, not normal
+        if data == {}:
+            print("warning: football.json is empty — treating as corrupt", file=sys.stderr)
+            football_state = "corrupt"
+        else:
+            football_state = data.get("state")
         throw_type = data.get("throw_type")
         if football_state == "caught":
             thrown_at = data.get("thrown_at", "")
@@ -79,9 +108,9 @@ def cmd_validate(args):
         sys.exit(1)
     import jsonschema
     try:
-        with open(fp) as f:
+        with open(fp, encoding='utf-8-sig') as f:
             data = json.load(f)
-        with open(SCHEMA_PATH) as f:
+        with open(SCHEMA_PATH, encoding='utf-8-sig') as f:
             schema = json.load(f)
         jsonschema.validate(data, schema)
         print(json.dumps({"valid": True}))
@@ -104,19 +133,18 @@ def cmd_archive(args):
         print(json.dumps({"error": f"not found: {fp}"}))
         sys.exit(1)
     try:
-        with open(fp) as f:
+        with open(fp, encoding='utf-8-sig') as f:
             data = json.load(f)
     except (json.JSONDecodeError, OSError):
         print(json.dumps({"error": f"corrupt football file: {fp}"}))
         sys.exit(1)
     data["state"] = "absorbed"
     desc = data.get("planner_payload", {}).get("thread", {}).get("description", "football")
-    date = data.get("thrown_at", datetime.now().strftime("%Y-%m-%d"))
+    date = data.get("thrown_at", datetime.now(timezone.utc).strftime("%Y-%m-%d"))
     archive_dir = fp.parent / "footballs"
     archive_dir.mkdir(exist_ok=True)
     dest = archive_dir / f"{date}-{_slug(desc)}.json"
-    with open(dest, "w") as f:
-        json.dump(data, f, indent=2)
+    atomic_write_json(str(dest), data)
     fp.unlink()
     print(json.dumps({"archived_to": str(dest)}))
 
@@ -125,25 +153,28 @@ def _pack_planner(args, bd, fp, throw_count, today):
     existing = {}
     if fp.exists():
         try:
-            with open(fp) as f:
+            with open(fp, encoding='utf-8-sig') as f:
                 existing = json.load(f)
         except (json.JSONDecodeError, OSError):
             existing = {}
     thread = json.loads(args.thread) if args.thread else {}
     payload = {"thread": thread}
     if args.type == "heavy":
-        context = {"relevant_decisions": [], "alpha_refs": [], "orientation_fragment": "", "dialogue_style": ""}
+        context = {"relevant_decisions": [], "alpha_refs": [], "orientation_fragment": "", "dialogue_style": None}
         hot = _hot(bd)
         if hot.exists():
             try:
-                with open(hot) as f:
+                with open(hot, encoding='utf-8-sig') as f:
                     trunk = json.load(f)
             except (json.JSONDecodeError, OSError):
                 trunk = {}
+            # H4: warn if handoff.json is empty/hollow
+            if trunk == {} or "orientation" not in trunk:
+                print("warning: handoff.json is empty/hollow — planner context will be blank", file=sys.stderr)
             o = trunk.get("orientation", {})
             frags = [o.get("core_insight", ""), o.get("practical_warning", "")]
             context["orientation_fragment"] = " ".join(f for f in frags if f)
-            context["dialogue_style"] = trunk.get("instance_notes", {}).get("dialogue_style", "")
+            context["dialogue_style"] = trunk.get("instance_notes", {}).get("dialogue_style", None)
             context["relevant_decisions"] = trunk.get("recent_decisions", [])[:3]
         context["alpha_refs"] = json.loads(args.alpha_refs) if args.alpha_refs else []
         payload["context"] = context
@@ -153,8 +184,7 @@ def _pack_planner(args, bd, fp, throw_count, today):
             "throw_count": throw_count, "thrown_at": today,
             "planner_payload": payload,
             "worker_output": existing.get("worker_output", {})}
-    with open(fp, "w") as f:
-        json.dump(data, f, indent=2)
+    atomic_write_json(str(fp), data)
     print(json.dumps({"packed": True, "throw_count": throw_count}))
 
 
@@ -163,14 +193,17 @@ def _pack_worker(args, bd, fp, throw_count, today):
     micro_path = _micro(bd)
     if micro_path.exists():
         try:
-            with open(micro_path) as f:
+            with open(micro_path, encoding='utf-8-sig') as f:
                 micro = json.load(f)
         except (json.JSONDecodeError, OSError):
             micro = {}
+    # H5: warn if football-micro.json is empty
+    if micro == {}:
+        print("warning: football-micro.json is empty — worker output may be incomplete", file=sys.stderr)
     existing = {}
     if fp.exists():
         try:
-            with open(fp) as f:
+            with open(fp, encoding='utf-8-sig') as f:
                 existing = json.load(f)
         except (json.JSONDecodeError, OSError):
             existing = {}
@@ -193,8 +226,7 @@ def _pack_worker(args, bd, fp, throw_count, today):
     existing.update({"throw_count": throw_count, "thrown_by": "worker",
                      "throw_type": args.type, "thrown_at": today,
                      "state": "returned", "worker_output": worker_output})
-    with open(fp, "w") as f:
-        json.dump(existing, f, indent=2)
+    atomic_write_json(str(fp), existing)
     print(json.dumps({"packed": True, "throw_count": throw_count}))
 
 
@@ -204,8 +236,14 @@ def cmd_unpack(args):
         print(json.dumps({"error": f"not found: {fp}"}))
         sys.exit(1)
     try:
-        with open(fp) as f:
-            print(json.dumps(json.load(f), indent=2))
+        with open(fp, encoding='utf-8-sig') as f:
+            data = json.load(f)
+        # V2: schema version check
+        try:
+            check_schema_version(data, max_supported=1, path=str(fp))
+        except SchemaVersionError as e:
+            print(f"warning: {e}", file=sys.stderr)
+        print(json.dumps(data, indent=2))
     except (json.JSONDecodeError, OSError) as e:
         print(json.dumps({"error": f"corrupt football file: {e}"}))
         sys.exit(1)
@@ -217,7 +255,7 @@ def cmd_flag(args):
     micro = {}
     if micro_path.exists():
         try:
-            with open(micro_path) as f:
+            with open(micro_path, encoding='utf-8-sig') as f:
                 micro = json.load(f)
         except (json.JSONDecodeError, OSError):
             micro = {}
@@ -226,8 +264,7 @@ def cmd_flag(args):
         "content": json.loads(args.content),
         "rationale": args.rationale,
     })
-    with open(micro_path, "w") as f:
-        json.dump(micro, f, indent=2)
+    atomic_write_json(str(micro_path), micro)
     print(json.dumps({"flagged": True, "total_flags": len(micro["flagged_for_trunk"])}))
 
 
@@ -237,12 +274,14 @@ def cmd_pack(args):
     existing_count = 0
     if fp.exists():
         try:
-            with open(fp) as f:
+            with open(fp, encoding='utf-8-sig') as f:
                 existing_count = json.load(f).get("throw_count", 0)
         except (json.JSONDecodeError, OSError):
+            # M3: warn on corruption instead of silent reset
+            print("warning: football.json corrupt — throw_count reset to 0", file=sys.stderr)
             existing_count = 0
     throw_count = existing_count + 1
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     if args.side == "planner":
         _pack_planner(args, bd, fp, throw_count, today)
     else:

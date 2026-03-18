@@ -72,6 +72,12 @@ def main():
     with open(args.scan, "r", encoding="utf-8") as f:
         scan_data = json.load(f)
 
+    # H8: warn if all page classification arrays are empty
+    classification_keys = ("text_pages", "tables", "complex_layout", "scanned", "equations")
+    if all(not scan_data.get(k) for k in classification_keys):
+        print("warning: scan produced zero classified pages"
+              " — extraction may be incomplete", file=sys.stderr)
+
     extract_text(args.pdf_path, scan_data, args.output)
 
 

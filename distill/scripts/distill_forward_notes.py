@@ -24,10 +24,11 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import os
 import re
 import sys
 from pathlib import Path
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 import time
 
 if sys.platform == 'win32' and __name__ == '__main__':
@@ -255,13 +256,21 @@ def cmd_health(args):
         print(json.dumps({'status': 'error', 'message': f'Not found: {notes_path}'}))
         return
 
-    with open(notes_path, 'r', encoding='utf-8') as f:
+    with open(notes_path, 'r', encoding='utf-8-sig') as f:
         registry = json.load(f)
 
     notes = registry.get('notes', {})
-    next_number = registry.get('next_number', 0)
+    if 'next_number' not in registry:
+        print(json.dumps({'status': 'error',
+                          'message': 'next_number missing from registry — invalid forward_notes.json'}))
+        return
+    next_number = registry['next_number']
 
     if not notes:
+        # Distinguish empty-but-structured from truly absent
+        if 'notes' in registry and len(registry) > 1:
+            print("warning: forward_notes.json has structure but zero notes"
+                  " — possible data loss", file=sys.stderr)
         print(json.dumps({'status': 'ok', 'message': 'No forward notes to analyze.'}))
         return
 
@@ -272,7 +281,7 @@ def cmd_health(args):
         index_path = alpha_dir / 'index.json'
         if index_path.exists():
             try:
-                with open(index_path, 'r', encoding='utf-8') as f:
+                with open(index_path, 'r', encoding='utf-8-sig') as f:
                     alpha_index = json.load(f)
                 concept_index = alpha_index.get('concept_index', {})
             except (json.JSONDecodeError, OSError):
@@ -365,7 +374,7 @@ def cmd_consolidate(args):
         print(json.dumps({'status': 'error', 'message': f'Not found: {notes_path}'}))
         return
 
-    with open(notes_path, 'r', encoding='utf-8') as f:
+    with open(notes_path, 'r', encoding='utf-8-sig') as f:
         registry = json.load(f)
 
     notes = registry.get('notes', {})
@@ -420,7 +429,7 @@ def cmd_consolidate(args):
     # Execute merge
     # Update surviving note
     notes[into_id]['description'] = merged_desc
-    notes[into_id]['date'] = str(date.today())
+    notes[into_id]['date'] = datetime.now(timezone.utc).strftime('%Y-%m-%d')
     if len(sources) > 1:
         notes[into_id]['source'] = ', '.join(sorted(sources))
 
@@ -428,12 +437,28 @@ def cmd_consolidate(args):
     for aid in absorbed:
         notes[aid]['status'] = 'merged_into'
         notes[aid]['merged_into'] = into_id
-        notes[aid]['merged_date'] = str(date.today())
+        notes[aid]['merged_date'] = datetime.now(timezone.utc).strftime('%Y-%m-%d')
 
     # Write back
     registry['notes'] = notes
-    with open(notes_path, 'w', encoding='utf-8') as f:
-        json.dump(registry, f, indent=2)
+    registry.setdefault('schema_version', 1)
+    # Atomic write — forward_notes.json is critical state (T3)
+    import tempfile
+    dir_name = os.path.dirname(os.path.abspath(notes_path))
+    fd, tmp_path = tempfile.mkstemp(dir=dir_name, suffix='.tmp', text=True)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            json.dump(registry, f, indent=2)
+            f.write('\n')
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, notes_path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
     print(json.dumps({
         'status': 'ok',
@@ -463,7 +488,7 @@ def cmd_check_new(args):
         print(json.dumps({'matches': []}))
         return
 
-    with open(notes_path, 'r', encoding='utf-8') as f:
+    with open(notes_path, 'r', encoding='utf-8-sig') as f:
         registry = json.load(f)
 
     notes = registry.get('notes', {})
@@ -478,7 +503,7 @@ def cmd_check_new(args):
         index_path = alpha_dir / 'index.json'
         if index_path.exists():
             try:
-                with open(index_path, 'r', encoding='utf-8') as f:
+                with open(index_path, 'r', encoding='utf-8-sig') as f:
                     alpha_index = json.load(f)
                 concept_index = alpha_index.get('concept_index', {})
             except (json.JSONDecodeError, OSError):
@@ -535,11 +560,15 @@ def cmd_template(args):
         print(f"To create: start at next_number: 70 (§5.1–§5.69 reserved)")
         return
 
-    with open(notes_path, 'r', encoding='utf-8') as f:
+    with open(notes_path, 'r', encoding='utf-8-sig') as f:
         registry = json.load(f)
 
     notes = registry.get('notes', {})
-    next_num = registry.get('next_number', 70)
+    if 'next_number' not in registry:
+        print("ERROR: next_number missing from registry — invalid forward_notes.json",
+              file=sys.stderr)
+        return
+    next_num = registry['next_number']
 
     # Status breakdown
     by_status = {}
@@ -548,7 +577,7 @@ def cmd_template(args):
         by_status.setdefault(s, []).append(nid)
 
     # Output
-    today = date.today().isoformat()
+    today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
     print(f"next_number: {next_num}  |  total: {len(notes)}")
     for status, ids in sorted(by_status.items()):
         print(f"  {status}: {len(ids)}  [{', '.join(sorted(ids)[-5:])}{'...' if len(ids) > 5 else ''}]")

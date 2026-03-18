@@ -35,7 +35,7 @@ import re
 import copy
 import argparse
 from pathlib import Path
-from datetime import date
+from datetime import date, datetime, timezone
 
 # Force UTF-8 stdout/stderr on Windows (buffer data may contain unicode)
 # Guard: only wrap when running as main script, not when imported by tests
@@ -101,7 +101,7 @@ def _parse_limits_from_file(filepath, limits):
     if not os.path.exists(filepath):
         return
     try:
-        with open(filepath, 'r', encoding='utf-8') as f:
+        with open(filepath, 'r', encoding='utf-8-sig') as f:
             content = f.read()
         for layer in ('hot', 'warm', 'cold'):
             match = re.search(
@@ -575,7 +575,7 @@ def cmd_update(args):
         if 'recent_decisions' not in hot:
             hot['recent_decisions'] = []
         for d in changes['new_decisions']:
-            d.setdefault('session', str(date.today()))
+            d.setdefault('session', datetime.now(timezone.utc).strftime('%Y-%m-%d'))
             d.setdefault('see', [])
             hot['recent_decisions'].append(d)
         report.append(f"Added {len(changes['new_decisions'])} decisions")
@@ -676,7 +676,7 @@ def cmd_update(args):
             hot['concept_map_digest']['flagged'] = digest_flagged
             total = sum(len(g) for g in concept_map.values() if isinstance(g, list))
             hot['concept_map_digest']['_meta']['total_entries'] = total
-            hot['concept_map_digest']['_meta']['last_validated'] = str(date.today())
+            hot['concept_map_digest']['_meta']['last_validated'] = datetime.now(timezone.utc).strftime('%Y-%m-%d')
 
             if added or updated:
                 report.append(f"Concept map: {added} added, {updated} updated")
@@ -707,14 +707,14 @@ def cmd_update(args):
 
             cw['entries'] = cw_entries
             cw['_meta']['total_entries'] = len(cw_entries)
-            cw['_meta']['last_validated'] = str(date.today())
+            cw['_meta']['last_validated'] = datetime.now(timezone.utc).strftime('%Y-%m-%d')
             warm['convergence_web'] = cw
 
             # Update hot digest
             if 'convergence_web_digest' not in hot:
                 hot['convergence_web_digest'] = {'_meta': {}, 'clusters': [], 'flagged': []}
             hot['convergence_web_digest']['_meta']['total_entries'] = len(cw_entries)
-            hot['convergence_web_digest']['_meta']['last_validated'] = str(date.today())
+            hot['convergence_web_digest']['_meta']['last_validated'] = datetime.now(timezone.utc).strftime('%Y-%m-%d')
 
             if cw_added:
                 report.append(f"Convergence web: {cw_added} added")
@@ -733,7 +733,7 @@ def cmd_update(args):
             warm = {'schema_version': 2, 'layer': 'warm', 'session_summaries': []}
         summaries = warm.get('session_summaries', [])
         summaries.append({
-            'date': changes.get('session_meta', {}).get('date', str(date.today())),
+            'date': changes.get('session_meta', {}).get('date', datetime.now(timezone.utc).strftime('%Y-%m-%d')),
             'commit': changes.get('session_meta', {}).get('commit', '?'),
             'summary': changes['natural_summary']
         })
@@ -831,7 +831,7 @@ def cmd_migrate(args):
                 old_id = entry.get('id', entry.get('what', '?'))
                 cold_entry = copy.deepcopy(entry)
                 cold_entry['id'] = new_id
-                cold_entry['migrated_from_warm'] = str(date.today())
+                cold_entry['migrated_from_warm'] = datetime.now(timezone.utc).strftime('%Y-%m-%d')
                 cold['archived_decisions'].append(cold_entry)
                 cold_entries.append(cold_entry)
 
@@ -934,6 +934,9 @@ def cmd_validate(args):
     # Schema version
     if hot.get('schema_version', 0) < SCHEMA_VERSION:
         issues.append(f"Schema version {hot.get('schema_version')} < {SCHEMA_VERSION}. Migration needed.")
+    if hot.get('schema_version', 0) > SCHEMA_VERSION:
+        print(f"buffer_manager: handoff.json schema_version {hot.get('schema_version')} > {SCHEMA_VERSION} — some features may not work",
+              file=sys.stderr)
 
     # Size checks
     hot_lines = count_json_lines(hot)
@@ -1148,7 +1151,7 @@ def cmd_sync(args):
     registry['projects'][project_name] = {
         'buffer_path': str(Path(buf_dir).resolve()),
         'scope': scope,
-        'last_handoff': str(date.today()),
+        'last_handoff': datetime.now(timezone.utc).strftime('%Y-%m-%d'),
         'project_context': ori.get('core_insight', '')[:120],
         'remote_backup': False
     }
@@ -1285,7 +1288,7 @@ def cmd_archive(args):
                         'id': entry.get('id'),
                         'archived_to': f"tower-{tower_num:03d}",
                         'was': entry.get('what', entry.get('key', '?'))[:60],
-                        'session_archived': str(date.today())
+                        'session_archived': datetime.now(timezone.utc).strftime('%Y-%m-%d')
                     })
                 else:
                     remaining.append(entry)
@@ -1295,7 +1298,7 @@ def cmd_archive(args):
             'schema_version': 2,
             'layer': 'tower',
             'tower_number': tower_num,
-            'created': str(date.today()),
+            'created': datetime.now(timezone.utc).strftime('%Y-%m-%d'),
             'entries': tower_entries
         }
 
@@ -2090,7 +2093,7 @@ def _read_sigma_hits(buf_dir):
         return {}
     temporal = {}
     try:
-        with open(hits_path, 'r', encoding='utf-8') as f:
+        with open(hits_path, 'r', encoding='utf-8-sig') as f:
             for line in f:
                 parts = line.strip().split()
                 if len(parts) < 2:
@@ -2124,7 +2127,7 @@ def _read_sigma_errors(buf_dir):
     false_pos_count = 0
     total = 0
     try:
-        with open(errors_path, 'r', encoding='utf-8') as f:
+        with open(errors_path, 'r', encoding='utf-8-sig') as f:
             for line in f:
                 line = line.strip()
                 if not line:
@@ -2175,7 +2178,7 @@ def compute_phase_state(buf_dir, index, temporal_data, error_data):
     sigma_scores = {}
     if scores_path.exists():
         try:
-            with open(scores_path, 'r', encoding='utf-8') as f:
+            with open(scores_path, 'r', encoding='utf-8-sig') as f:
                 sigma_scores = json.load(f)
         except (json.JSONDecodeError, OSError):
             pass
@@ -2206,7 +2209,7 @@ def compute_phase_state(buf_dir, index, temporal_data, error_data):
         'total_ticks': total_ticks,
         'hit_rate': round(total_hits / max(total_ticks, 1), 4),
         'error_rate': round(total_errors / max(total_ticks, 1), 4),
-        'date': str(date.today()),
+        'date': datetime.now(timezone.utc).strftime('%Y-%m-%d'),
     }
 
 
@@ -2219,11 +2222,11 @@ def record_phase_trajectory(buf_dir, state):
     traj_path = buf_dir / '.buffer_trajectory'
 
     # Check if today already recorded
-    today = state.get('date', str(date.today()))
+    today = state.get('date', datetime.now(timezone.utc).strftime('%Y-%m-%d'))
     existing_lines = []
     try:
         if traj_path.exists():
-            with open(traj_path, 'r', encoding='utf-8') as f:
+            with open(traj_path, 'r', encoding='utf-8-sig') as f:
                 for line in f:
                     line = line.strip()
                     if not line:
@@ -2255,7 +2258,7 @@ def _read_phase_trajectory(buf_dir, last_n=10):
 
     entries = []
     try:
-        with open(traj_path, 'r', encoding='utf-8') as f:
+        with open(traj_path, 'r', encoding='utf-8-sig') as f:
             for line in f:
                 line = line.strip()
                 if not line:
@@ -2279,7 +2282,7 @@ def _read_coactivation(buf_dir):
     if not coact_path.exists():
         return {}
     try:
-        with open(coact_path, 'r', encoding='utf-8') as f:
+        with open(coact_path, 'r', encoding='utf-8-sig') as f:
             return json.load(f)
     except (json.JSONDecodeError, OSError):
         return {}
@@ -2555,10 +2558,9 @@ def cmd_alpha_reinforce(args):
         ]
         print(json.dumps(result_summary, indent=2))
         return
-    from datetime import datetime
     index['reinforcement'] = reinforcement
     index['cw_graph'] = cw_edges
-    index['reinforcement_computed'] = datetime.now().strftime('%Y-%m-%d')
+    index['reinforcement_computed'] = datetime.now(timezone.utc).strftime('%Y-%m-%d')
 
     # Wholeness computation (Alexander-Hopfield energy)
     active_set = set(temporal_data.keys()) if temporal_data else set()
@@ -2574,7 +2576,7 @@ def cmd_alpha_reinforce(args):
         'adjacency': adj,
         'concepts': adj_concepts,
         'edge_count': len(cw_edges),
-        'computed': datetime.now().strftime('%Y-%m-%d'),
+        'computed': datetime.now(timezone.utc).strftime('%Y-%m-%d'),
     })
 
     # Phase portrait: record trajectory snapshot at batch checkpoint
@@ -2729,10 +2731,9 @@ def cmd_alpha_clusters(args):
         print(json.dumps(result_summary, indent=2))
         return
 
-    from datetime import datetime
     index['clusters'] = clusters
     index['w_to_cluster'] = w_to_cluster
-    index['clusters_computed'] = datetime.now().strftime('%Y-%m-%d')
+    index['clusters_computed'] = datetime.now(timezone.utc).strftime('%Y-%m-%d')
 
     idx_path = alpha_index_path(buf_dir)
     write_json(idx_path, index)
@@ -3330,7 +3331,7 @@ def cmd_alpha_write(args):
         })
 
     # Update last_updated timestamp
-    index['last_updated'] = str(date.today())
+    index['last_updated'] = datetime.now(timezone.utc).strftime('%Y-%m-%d')
 
     # Write updated index
     if not dry_run and results:
@@ -3587,7 +3588,7 @@ def cmd_alpha_delete(args):
 
     # Write updated index
     if deleted:
-        index['last_updated'] = str(date.today())
+        index['last_updated'] = datetime.now(timezone.utc).strftime('%Y-%m-%d')
         write_json(index_path, index)
 
     output = {
@@ -3684,8 +3685,7 @@ def cmd_beta_append(args):
         print(json.dumps({"status": "error", "message": f"Invalid JSON: {exc}"}))
         sys.exit(1)
 
-    from datetime import datetime
-    entry['ts'] = datetime.now().isoformat(timespec='seconds')
+    entry['ts'] = datetime.now(timezone.utc).isoformat(timespec='seconds')
     entry.setdefault('promoted', False)
     entry.setdefault('r', 0.2)
     entry.setdefault('tags', [])
@@ -3775,8 +3775,8 @@ def cmd_beta_purge(args):
     # Compute cutoff: entries from sessions older than max_age handoffs
     # Use date-based heuristic: if we assume ~1 session/day, max_age sessions
     # = max_age days. More robust: count distinct dates in entries.
-    from datetime import datetime, timedelta
-    cutoff = (datetime.now() - timedelta(days=max_age)).isoformat(timespec='seconds')
+    from datetime import timedelta
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=max_age)).isoformat(timespec='seconds')
 
     surviving = []
     purged = 0

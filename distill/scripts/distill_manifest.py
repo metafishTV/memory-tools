@@ -26,7 +26,7 @@ import math
 import re
 import sys
 from collections import defaultdict
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 if sys.platform == 'win32' and __name__ == '__main__':
@@ -72,7 +72,7 @@ except (ImportError, Exception):
 
 def create_empty_manifest(project: str = '') -> dict:
     """Create a fresh manifest structure."""
-    today = date.today().isoformat()
+    today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
     return {
         'version': MANIFEST_VERSION,
         'project': project,
@@ -101,13 +101,25 @@ def load_manifest(path: Path) -> dict:
     """Load manifest from JSON file."""
     if not path.exists():
         return create_empty_manifest()
-    with open(path, 'r', encoding='utf-8') as f:
-        return json.load(f)
+    with open(path, 'r', encoding='utf-8-sig') as f:
+        data = json.load(f)
+    # V6: warn if manifest version is higher than what we support
+    loaded_version = data.get('version', '1.0.0')
+    try:
+        loaded_major = int(str(loaded_version).split('.')[0])
+        supported_major = int(MANIFEST_VERSION.split('.')[0])
+        if loaded_major > supported_major:
+            print(f"warning: manifest version {loaded_version} is higher than"
+                  f" supported {MANIFEST_VERSION} — upgrade your plugin",
+                  file=sys.stderr)
+    except (ValueError, IndexError):
+        pass
+    return data
 
 
 def save_manifest(manifest: dict, path: Path) -> None:
     """Save manifest to JSON file."""
-    manifest['updated'] = date.today().isoformat()
+    manifest['updated'] = datetime.now(timezone.utc).strftime('%Y-%m-%d')
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, 'w', encoding='utf-8') as f:
         json.dump(manifest, f, indent=2, ensure_ascii=False)
@@ -123,7 +135,7 @@ def load_alpha_index(alpha_dir: Path) -> dict:
     if not index_path.exists():
         return {}
     try:
-        with open(index_path, 'r', encoding='utf-8') as f:
+        with open(index_path, 'r', encoding='utf-8-sig') as f:
             return json.load(f)
     except (json.JSONDecodeError, OSError):
         return {}
@@ -569,7 +581,7 @@ def add_to_repass_queue(manifest: dict, target: str,
         'reason': reason,
         'concepts': concepts,
         'activation_level': round(activation, 3),
-        'added': date.today().isoformat(),
+        'added': datetime.now(timezone.utc).strftime('%Y-%m-%d'),
         'iteration': 0,
     })
 
@@ -883,7 +895,7 @@ def cmd_update(args):
     iteration = existing.get('iteration', 0) + 1
 
     source_entry = {
-        'date_distilled': date.today().isoformat(),
+        'date_distilled': datetime.now(timezone.utc).strftime('%Y-%m-%d'),
         'source_type': existing.get('source_type', ''),
         'extraction_route': existing.get('extraction_route', ''),
         'register': existing.get('register', ''),
