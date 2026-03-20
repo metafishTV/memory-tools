@@ -2239,7 +2239,7 @@ def compute_phase_state(buf_dir, index, temporal_data, error_data):
     total_ticks = 0
     try:
         if ticks_path.exists():
-            with open(ticks_path, 'r') as f:
+            with open(ticks_path, 'r', encoding='utf-8') as f:
                 total_ticks = int(f.read().strip() or '0')
     except (ValueError, OSError):
         pass
