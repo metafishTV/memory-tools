@@ -14,6 +14,11 @@ All notable changes to buffer are documented here.
 - **`/buffer:off` SKILL.md rewrite** — 467→276 lines (41% reduction), zero features removed. Sequential steps merged into parallel batches, First-Run Detection deduped (references on.md instead of restating), compose steps (active work + decisions + threads) unified, infrastructure writes (registry, compaction directives, session markers, MEMORY sync) parallelized.
 - **Quicksave/Targeted briefing** — both modes now write briefing.md (was previously skipped).
 
+### Football skill fix — multi-ball support
+- **`/buffer:catch` rewrite** — skill now uses `buffer_football.py catch` command instead of manual validate+unpack+state-write. Handles single-ball and multi-ball transparently (ball selection, validation, state transition in one call). Removed separate validate/unpack steps, hardcoded `football.json` paths, and manual state writes that broke in multi-ball mode.
+- **`/buffer:throw` rewrite** — skill now uses `--multiball` flag by default and passes `--ball-id` for worker returns. Removed hardcoded `football.json` validate calls. Planner confirms with ball ID. Worker determines ball_id from micro-hot-layer filename.
+- Both skills streamlined: catch 157→119 lines, throw 145→107 lines.
+
 ## [buffer 3.7.0 / distill 3.1.0] - 2026-03-19
 
 ### Managed rules deployment (both plugins)

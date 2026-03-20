@@ -5,7 +5,7 @@ description: Catch a thrown football. Worker side initializes micro-session; pla
 
 # /buffer:catch
 
-Unpacks the football and acts. Behavior depends on the football's current state, detected automatically.
+Unpacks the football and acts. Behavior depends on the football's current state, detected automatically. Works identically for single-ball and multi-ball — the script handles both.
 
 ---
 
@@ -15,32 +15,40 @@ Unpacks the football and acts. Behavior depends on the football's current state,
 python plugin/scripts/buffer_football.py status
 ```
 
-Route:
-- `session_type == "worker"` AND `football_state == "in_flight"` → Worker Catch Branch
-- `session_type == "planner"` AND `football_state == "returned"` → Planner Absorb Branch
-- `session_type == "planner"` AND `football_state == "caught"` → **Stale Football Check**: read `thrown_at` from `football.json`. If 3+ days old, surface: "A football was caught on [date] but never returned. Absorb the worker's partial progress from `football-micro.json`?" If yes → Planner Absorb Branch (treat micro-hot-layer as partial heavy return). If no → STOP.
-- `session_type == "ambiguous"` → **⚠ MANDATORY POPUP** via `AskUserQuestion`: "Both trunk and micro-hot-layer detected. Are you the planner or the worker?" Route accordingly.
-- `football_state == null` → STOP: "No football found. Ask the planner to run /buffer:throw first."
-- Any other combination → STOP: tell the user what was found, ask them to verify session state.
+The output includes `mode` (`"legacy"` or `"multi-ball"`) and `session_type`. Route based on `session_type`:
+
+| session_type | Condition | Route |
+|---|---|---|
+| `"worker"` | Ball(s) in_flight | Worker Catch Branch |
+| `"planner"` | Ball(s) returned | Planner Absorb Branch |
+| `"planner"` | Ball(s) caught but stale (3+ days) | **Stale check**: "A football was caught on [date] but never returned. Absorb partial progress?" If yes → Planner Absorb. If no → STOP. |
+| `"ambiguous"` | Both trunk and micro detected | **⚠ MANDATORY POPUP**: "Both trunk and micro-hot-layer detected. Are you the planner or the worker?" Route accordingly. |
+| `"unknown"` / no balls | Nothing found | STOP: "No football found. Ask the planner to run /buffer:throw first." |
+
+For multi-ball: check `in_flight`, `caught`, `returned` arrays and `stale_balls` in the status output instead of `football_state`.
 
 ---
 
 ## Worker Catch Branch
 
-### Step 2W: Validate and Unpack
+### Step 2W: Catch the ball
 
 ```bash
-python plugin/scripts/buffer_football.py validate --football .claude/buffer/football.json
-python plugin/scripts/buffer_football.py unpack --football .claude/buffer/football.json
+python plugin/scripts/buffer_football.py catch
 ```
 
-If `valid: false` → show error to user, STOP.
+This single call handles ball selection, validation, unpacking, and state transition (`in_flight` → `caught`). Returns:
 
-Note `throw_count` — if `1`, heavy catch (first task). If `> 1`, lite catch (additional task).
+- If **one ball** in flight: catches it, returns `{ "caught": true, "ball_id": "...", "throw_type": "...", "throw_count": N, "planner_payload": {...} }`
+- If **multiple balls** in flight: returns `{ "action": "choose", "in_flight": [...] }` — present the list via **⚠ MANDATORY POPUP** and re-run with `--ball-id <selected>`.
+- If **error**: show to user, STOP.
+
+Note `throw_count` from the response — if `1`, heavy catch (first task). If `> 1`, lite catch (additional task).
 
 ### Step 3W (heavy — throw_count == 1): Initialize micro-hot-layer
 
-Create `.claude/buffer/football-micro.json`:
+Create the micro-hot-layer file. For multi-ball: `.claude/buffer/football-micro-<ball_id>.json`. For legacy: `.claude/buffer/football-micro.json`.
+
 ```json
 {
   "session_date": "YYYY-MM-DD",
@@ -53,17 +61,13 @@ Create `.claude/buffer/football-micro.json`:
 }
 ```
 
-**Adopt `dialogue_style` silently.** Read `planner_payload.context.dialogue_style`. From your first response onward, match that conversational register — tone, cadence, formality. Do not announce it. Just be it.
+**Adopt `dialogue_style` silently.** Read `planner_payload.context.dialogue_style`. Match that register from your first response onward. Do not announce it.
 
 ### Step 4W (lite — throw_count > 1): Update micro-hot-layer
 
-Read `football-micro.json`. Set `active_task` to `current_task` from the new thread. Increment `catch_count`. Write back.
+Read the micro-hot-layer. Set `active_task` to `current_task` from the new thread. Increment `catch_count`. Write back.
 
-### Step 5W: Set state to `caught`
-
-Read `football.json`. Set `"state": "caught"`. Write back.
-
-### Step 6W: Orient
+### Step 5W: Orient
 
 Present to yourself:
 - **Thread:** `planner_payload.thread.description` and `current_task`
@@ -75,43 +79,44 @@ Present to yourself:
 
 Tell the user: "Worker micro-session initialized. Ready to work on: [current_task]"
 
-### Step 7W: Play the full field
+### Step 6W: Play the full field
 
-You have access to every skill, agent, and tool available in this session. **Use them proactively** — do not wait for the user to ask. The planner delegated this task because they trust you to execute autonomously with the best available plays. Treat every available capability as part of your toolkit.
+You have access to every skill, agent, and tool available. **Use them proactively** — the planner delegated this task because they trust you to execute autonomously.
 
-**Mandatory plays** (use these when the situation calls for it, without asking):
-- **Code review**: After completing a significant implementation chunk, deploy the `superpowers:code-reviewer` agent or the `feature-dev:code-reviewer` agent to review your own work before moving on. Do not ship unreviewed code back to the planner.
-- **Parallel agents**: When the task has independent subtasks (research, fixes across different files, audits), dispatch them in parallel via the Agent tool. Do not serialize work that can be parallelized.
-- **Test-driven development**: When implementing features or fixes, write tests first or run existing tests after changes. Use `superpowers:test-driven-development` or `superpowers:verification-before-completion` as appropriate.
-- **Plans for complex work**: If the task is multi-step and non-trivial, use `superpowers:writing-plans` or `superpowers:executing-plans` to structure the work before diving in.
+**Mandatory plays** (use when the situation calls for it, without asking):
+- **Code review**: After significant implementation, deploy `superpowers:code-reviewer` or `feature-dev:code-reviewer` on your own work before returning.
+- **Parallel agents**: Dispatch independent subtasks in parallel via the Agent tool.
+- **Test-driven development**: Write tests first or run existing tests after changes.
+- **Plans for complex work**: Use `superpowers:writing-plans` or `superpowers:executing-plans` for multi-step tasks.
 
 **Situational plays** (use judgment):
-- **Systematic debugging**: If you hit a bug or unexpected test failure, use `superpowers:systematic-debugging` rather than guessing.
-- **Brainstorming**: If the task involves design decisions with trade-offs, use `superpowers:brainstorming` to explore options before committing.
-- **Codebase exploration**: Use the `Explore` agent type for deep codebase understanding when you need to trace dependencies or understand architecture before making changes.
+- `superpowers:systematic-debugging` for unexpected failures
+- `superpowers:brainstorming` for design decisions with trade-offs
+- `Explore` agent type for deep codebase understanding
 
-**Operating principle**: The planner is not watching over your shoulder. They will see your results when you throw the football back. Make every decision as if you are the senior engineer on this task — because you are. Use the tools that a senior engineer would use: review your own code, test your changes, parallelize where possible, and flag anything surprising for the planner's attention.
+**Operating principle**: Make every decision as the senior engineer on this task. Review your own code, test your changes, parallelize where possible, flag anything surprising.
 
-Flag items for trunk carry-over at any time using:
+Flag items for trunk carry-over:
 ```bash
 python plugin/scripts/buffer_football.py flag \
   --type decision|alpha_entry|forward_note|open_thread \
   --content '<JSON>' \
   --rationale '<why this warrants verbatim carry-over>'
 ```
+For multi-ball, add `--ball-id <id>`.
 
 ---
 
 ## Planner Absorb Branch
 
-### Step 2P: Validate, unpack, and present worker output
+### Step 2P: Unpack and present worker output
 
 ```bash
-python plugin/scripts/buffer_football.py validate --football .claude/buffer/football.json
-python plugin/scripts/buffer_football.py unpack --football .claude/buffer/football.json
+python plugin/scripts/buffer_football.py unpack --ball-id <ball_id>
 ```
+(For legacy single-ball, omit `--ball-id` — the script falls back to `football.json`.)
 
-If `valid: false` → show error to user, STOP.
+If error → show to user, STOP.
 
 Present `worker_output` to the user:
 - **Completed:** list items
@@ -135,22 +140,21 @@ For each item in `worker_output.flagged_for_trunk`, present one at a time:
 
 ### Step 4P: Digest into trunk
 
-Guide the planner through updating `.claude/buffer/handoff.json`:
+Update `.claude/buffer/handoff.json`:
 - Add completed tasks to `active_work.completed_this_session`
 - Update `active_work.current_phase` and `next_action`
 - Add new decisions to `recent_decisions`
 - Update `open_threads` as needed
 
-### Step 5P: Clear football_in_flight
+### Step 5P: Clear football_in_flight + Archive
+
+```bash
+python plugin/scripts/buffer_football.py archive --ball-id <ball_id>
+```
+(For legacy, use `--football .claude/buffer/football.json`.)
 
 Read `handoff.json`. Set `"football_in_flight": false`. Write back.
 
-### Step 6P: Archive
-
-```bash
-python plugin/scripts/buffer_football.py archive --football .claude/buffer/football.json
-```
-
-### Step 7P: Confirm
+### Step 6P: Confirm
 
 Tell the user: "Football absorbed and archived. Worker output digested into trunk."

@@ -5,7 +5,7 @@ description: Pack and throw a football. Planner side packs for the worker; worke
 
 # /buffer:throw
 
-Packs the football for the other session to catch. Behavior depends on session type — detected automatically.
+Packs the football for the other session to catch. Behavior depends on session type — detected automatically. Works identically for single-ball and multi-ball — the script handles both.
 
 ---
 
@@ -15,10 +15,12 @@ Packs the football for the other session to catch. Behavior depends on session t
 python plugin/scripts/buffer_football.py status
 ```
 
-- `"planner"` → Planner Branch (Steps 2P–8P)
-- `"worker"` → Worker Branch (Steps 2W–6W)
-- `"ambiguous"` → **⚠ MANDATORY POPUP** via `AskUserQuestion`: "Both trunk and micro-hot-layer detected. Are you the planner or the worker?" If planner is selected, offer to absorb the stale micro-hot-layer before proceeding.
+- `"planner"` → Planner Branch (Steps 2P–7P)
+- `"worker"` → Worker Branch (Steps 2W–5W)
+- `"ambiguous"` → **⚠ MANDATORY POPUP** via `AskUserQuestion`: "Both trunk and micro-hot-layer detected. Are you the planner or the worker?" If planner, offer to absorb the stale micro-hot-layer before proceeding.
 - `"unknown"` → STOP: "No buffer found. Run /buffer:on or /buffer:catch first."
+
+For multi-ball: check `in_flight` array in status output to see if other balls are already out.
 
 ---
 
@@ -60,10 +62,12 @@ Format as JSON array: `["w:152"]` or `[]`.
 
 ### Step 5P: Pack
 
+The `pack` command auto-detects multi-ball mode (if a registry exists) or creates one with `--multiball`. For a first throw, always use `--multiball` to enable parallel workers from the start.
+
 **Heavy:**
 ```bash
 python plugin/scripts/buffer_football.py pack \
-  --side planner --type heavy \
+  --side planner --type heavy --multiball \
   --thread '<THREAD_JSON>' \
   --alpha-refs '<ALPHA_REFS_JSON>'
 ```
@@ -71,30 +75,24 @@ python plugin/scripts/buffer_football.py pack \
 **Lite:**
 ```bash
 python plugin/scripts/buffer_football.py pack \
-  --side planner --type lite \
+  --side planner --type lite --multiball \
   --thread '<THREAD_JSON>'
 ```
 
-### Step 6P: Validate
+The script returns the assigned `ball_id` in the output. Note it for the user.
 
-```bash
-python plugin/scripts/buffer_football.py validate --football .claude/buffer/football.json
-```
-
-If `valid: false` → show error to user, STOP.
-
-### Step 7P: Set football_in_flight on trunk
+### Step 6P: Set football_in_flight on trunk
 
 Read `.claude/buffer/handoff.json`. Set `"football_in_flight": true`. Write back.
 
-### Step 8P: Confirm
+### Step 7P: Confirm
 
 Show the user:
 - Thread description and current task
-- Throw type + throw count
+- Throw type + ball ID
 - Alpha refs (if heavy)
 
-Tell the user: "Football packed. Share the project path with your worker session and have them run `/buffer:catch`."
+Tell the user: "Football packed (ball: [ball_id]). Share the project path with your worker session and have them run `/buffer:catch`."
 
 ---
 
@@ -117,28 +115,24 @@ Ask:
 
 ### Step 4W: Pack return
 
+Determine the `ball_id` from the micro-hot-layer filename (`football-micro-<ball_id>.json`) or from `football.json` in legacy mode.
+
 **Heavy:**
 ```bash
-python plugin/scripts/buffer_football.py pack --side worker --type heavy
+python plugin/scripts/buffer_football.py pack --side worker --type heavy --ball-id <ball_id>
 ```
 
 **Lite:**
 ```bash
 python plugin/scripts/buffer_football.py pack \
-  --side worker --type lite \
+  --side worker --type lite --ball-id <ball_id> \
   --completed '<JSON_ARRAY>' \
   --changes '<JSON_ARRAY>' \
   --next-action '<STRING>'
 ```
 
-### Step 5W: Validate
+(For legacy single-ball, omit `--ball-id` — the script falls back to `football.json`.)
 
-```bash
-python plugin/scripts/buffer_football.py validate --football .claude/buffer/football.json
-```
+### Step 5W: Confirm
 
-If `valid: false` → show error to user, STOP.
-
-### Step 6W: Confirm
-
-Tell the user: "Football returned. Have the planner session run `/buffer:catch`."
+Tell the user: "Football returned (ball: [ball_id]). Have the planner session run `/buffer:catch`."
