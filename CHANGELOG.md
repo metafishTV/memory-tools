@@ -1,6 +1,17 @@
 # Changelog
 
-All notable changes to buffer are documented here.
+All notable changes are documented here.
+
+## [distill 3.2.0] - 2026-03-20
+
+### Skill invocation gate — structural pipeline enforcement
+- **`distill_skill_gate.py`** (new) — PreToolUse:Skill hook writes `SKILL_INVOKED:{UTC timestamp}` to `.distill_active` at infrastructure level when any `distill:*` skill is invoked via the Skill tool. Never blocks, only creates the content-validated marker.
+- **`distill_write_guard.py`** (new) — PreToolUse:Write+Edit hook validates `.distill_active` marker content before allowing writes to `distilled/*.md` or `interpretations/*.md`. Blocks if marker is missing, empty, or lacks `SKILL_INVOKED:` prefix.
+- **hooks.json** — 3 new entries: Write and Edit matchers for `distill_write_guard.py`, Skill matcher for `distill_skill_gate.py`. Total 7 PreToolUse hooks.
+- **Integrate skill Step 0** — changed from manual marker creation (`echo "active"`) to verification (`grep SKILL_INVOKED:`). Cleanup updated to remove markers from both `{root}/.claude/buffer/` and `{root}/` locations.
+- **settings.json** — inline Python Write guard removed (now handled by plugin scripts). Eliminates fragile walrus-operator one-liners in favor of proper scripts with error handling.
+
+**Problem solved**: LLM carrying forward procedural knowledge from a prior `/distill` invocation in the same conversation and executing the pipeline manually, skipping the Skill tool. The content-validated marker cannot be created by a bare `touch` or `echo "active"` — only by the hook infrastructure when the Skill tool is formally invoked.
 
 ## [buffer 3.8.3] - 2026-03-20
 
