@@ -33,6 +33,7 @@ needed to orient.
 
 **`scripts/buffer_manager.py`** (plugin-relative) handles mechanical sigma trunk operations. Use it instead of manually parsing JSON.
 
+- `discover --cwd .` — **Start here.** Single-call project discovery: reads registry, checks git, scans children, scores and ranks results. Returns structured JSON with routing recommendation. Replaces all manual shell discovery.
 - `read --buffer-dir .claude/buffer/` — Parse hot layer, resolve warm pointers (tombstones, redirects), output formatted reconstruction. Covers Steps 1, 3, 4. Add `--warm-max N` for project overrides.
 - `validate --buffer-dir .claude/buffer/` — Check layer sizes, schema version, required fields, alpha integrity.
 - `next-id --buffer-dir .claude/buffer/ --layer warm` — Get next sequential ID (scans alpha too to prevent collisions).
@@ -50,63 +51,30 @@ needed to orient.
 **⚠ MANDATORY POPUP**: Always show the project selector via AskUserQuestion before loading anything.
 Never auto-load a trunk without user confirmation.
 
-### 0a: Locate project context
+### 0a+0b: Discover and select (ONE call + ONE popup)
 
-Determine what projects are available. Do NOT load any trunk data at this point.
+Run the discover command to find all available projects in a single call:
 
-1. Try `git rev-parse --show-toplevel` from the current working directory.
-   - **If success**: cwd is inside a git repo. Note the repo root. Check if
-     `<repo-root>/.claude/buffer/handoff.json` exists — if so, this is a
-     local project with a buffer.
+```bash
+buffer_manager.py discover --cwd .
+```
 
-2. **If cwd is NOT a git repo** (git rev-parse fails):
-   - Scan **immediate children** of cwd (one level deep only) for directories
-     containing `.git/`.
-   - For each git-repo child, compute a score:
-     | Signal | Score |
-     |--------|-------|
-     | Has `.claude/buffer/handoff.json` | +1.0 |
-     | Has `.git/` | +0.5 |
-     | Matches a `projects.json` entry | +0.3 |
-   - Sort by score descending.
+This returns JSON with:
+- `routing`: one of `"resume"`, `"initialize"`, `"registry_only"`, `"first_run"`
+- `results`: scored list of projects (sorted by score descending)
+- Each result has: `name`, `repo_root`, `buffer_path`, `scope`, `last_handoff`, `score`, `has_handoff`, `has_git`
 
-3. Also read `~/.claude/buffer/projects.json` (if it exists) for entries whose
-   `repo_root` is under the current cwd. Merge with filesystem results from
-   step 2, deduplicate by repo root path.
+**⚠ MANDATORY POPUP**: Immediately present the project selector via `AskUserQuestion` based on the `routing` field:
 
-### 0b: Project selector (ALWAYS shown)
+| `routing` value | Popup options |
+|-----------------|---------------|
+| `"resume"` (top result score >= 1.0) | Resume **[name]** at [repo_root] (Recommended, last handoff: [last_handoff]) / Start new project / Start lite session. If multiple results with score >= 1.0, list all. |
+| `"initialize"` (results but all < 1.0) | Initialize buffer in **[name]** (highest-scoring) / Start new project / Start lite session |
+| `"registry_only"` (no local match, registry has entries) | Resume **[name]** (last handoff: [last_handoff]) / Switch to another project / Start new project / Start lite session |
+| `"first_run"` (nothing found) | Proceed directly to first-run setup (Step 0d) |
 
-**⚠ MANDATORY POPUP**: You MUST call `AskUserQuestion` before proceeding.
-Do NOT load any trunk data until the user responds.
-
-The popup adapts to what was found in 0a:
-
-**One result with score >= 1.0:**
-- Resume [project name] at [repo path] (Recommended) (last handoff: [date])
-- Start new project
-- Start lite session
-
-**Multiple results with score >= 1.0:**
-- Present as ranked list (score descending), top entry pre-selected
-- Start new project
-- Start lite session
-
-**Results found but all below 1.0 (git repos without buffers):**
-- Initialize buffer in [repo name] (highest-scoring)
-- Start new project
-- Start lite session
-
-**No results + registry has entries:**
-- Resume [most recent project from registry] (last handoff: [date])
-- Switch to another project (shows full list)
-- Start new project
-- Start lite session
-
-**No results + no registry (first run):**
-- Proceed directly to first-run setup (0d)
-
-If user selects an existing project: load its buffer_path and proceed to Step 0c.
-If user selects "Start new project" or "Start lite session": proceed to 0d.
+If user selects an existing project: load its `buffer_path` and proceed to Step 0c.
+If user selects "Start new project" or "Start lite session": proceed to Step 0d.
 
 ### 0c: Check for project skill
 
@@ -255,115 +223,101 @@ After registering the project, configure how MEMORY.md and the sigma trunk coexi
 ## Standard On-Hand Process
 
 Run these steps when a sigma trunk was found (Steps 0a-0c succeeded).
+Use the selected project's `buffer_path` (from discover output) for all paths below.
 
-### Step 0d: Mark session active
+### Parallel Batch 1: Load everything at once
 
-Read `.claude/buffer/.session_active` if it exists. It's a JSON file: `{"date": "YYYY-MM-DD", "off_count": N}`.
+Fire these reads **simultaneously** (all are independent):
 
-- If it **doesn't exist** or the `date` is **not today**: write `{"date": "[today]", "off_count": 0}` — fresh session.
-- If it **exists** and the `date` **is today**: keep the existing `off_count` — this is a continuation of the same session (e.g., after a reload or compaction recovery).
+1. **Read hot layer**: `.claude/buffer/handoff.json` (~200 lines) — mandatory
+2. **Read session briefing**: `.claude/buffer/briefing.md` (if exists)
+3. **Mark session active**: Read `.claude/buffer/.session_active` — if missing or `date` != today, write `{"date": "[today]", "off_count": 0}`. If exists and date is today, keep existing `off_count`.
 
-This marker tells the statusline (and other tools) that the buffer is loaded and active. The `off_count` tracks how many times `/buffer:off` has been run this session — a signal of session depth and context recycling.
+If `schema_version` in hot layer is missing or < 2, stop: "Found v1 sigma trunk. Run `/buffer:off` first to migrate to v2 format."
 
-### Step 0d-b: Write compaction directives
+### Parallel Batch 2: Git + setup (after hot layer loaded)
 
-Create `.claude/buffer/compact-directives.md` with four sections:
+Once the hot layer is in memory, fire these **simultaneously**:
 
-1. **On Disk** — list every buffer file that actually exists on disk:
-   handoff.json, handoff-warm.json, handoff-cold.json, alpha/ directory,
-   briefing.md, forward_notes.json. Only list files you confirmed exist.
+1. **Git grounding** (3 commands in one `&&` chain from the repo root):
+   ```bash
+   cd <repo_root> && git log --oneline <session_meta.commit>..HEAD && git status && git diff --stat
+   ```
 
-2. **Active Threads** — copy from `open_threads` in the handoff.json you
-   just loaded. One line per thread with its status and any reference.
+2. **Write compaction directives**: Create `.claude/buffer/compact-directives.md`:
+   - **On Disk** — list buffer files confirmed to exist (handoff.json, handoff-warm.json, handoff-cold.json, alpha/, briefing.md, forward_notes.json)
+   - **Active Threads** — from `open_threads` in hot layer
+   - **Already Persisted** — note what's saved from prior sessions
+   - **Session Vocabulary** — empty (filled during session)
 
-3. **Already Persisted** — note what data is already saved in the trunk
-   from previous sessions.
+3. **Ensure CLAUDE.md Compaction Guidance**: Add/replace `## Compaction Guidance` in project CLAUDE.md:
+   ```
+   ## Compaction Guidance
 
-4. **Session Vocabulary** — leave empty. Terms will be added during the
-   session as novel concepts emerge.
+   When compacting this conversation, follow these priorities:
 
-Also, ensure the project's CLAUDE.md contains a `## Compaction Guidance`
-section. If it doesn't exist, add it. If it exists, replace it. The section
-content:
+   - ALREADY ON DISK (do not reproduce in summary):
+     - Session buffer trunk: .claude/buffer/handoff.json (threads, decisions, state)
+     - Alpha bin: .claude/buffer/alpha/ (concept definitions, glossary)
+     - Git history: recoverable via tools
+   - PRESERVE IN SUMMARY (context-only, not on disk):
+     - Active thread of work and current task state
+     - Decisions made since last save
+     - User preferences or corrections expressed this session
+     - Session vocabulary (terms with specific meaning coined this session)
+   - End your summary with 1-2 sentences capturing exactly what was being
+     discussed in the most recent exchange — the immediate context the user
+     will expect to resume from.
+   - Project glossary and concept definitions are in the alpha bin. Standard
+     project terms can be used without re-defining. Only preserve definitions
+     for terms coined THIS session.
+   ```
 
-```
-## Compaction Guidance
+4. **Alpha bin detection** (Full + Alpha only): If `buffer_mode` is `"full"` AND `alpha/index.json` exists, read `full-ref.md` and run the alpha detection protocol there.
 
-When compacting this conversation, follow these priorities:
+5. **Lite alpha upgrade detection** (runs after alpha detection): If `alpha/index.json` exists, scan sources for any with `"mode": "lite"`:
+   - **Zero lite entries**: skip
+   - **Lite entries found AND `buffer_mode` is `"full"`**:
 
-- ALREADY ON DISK (do not reproduce in summary):
-  - Session buffer trunk: .claude/buffer/handoff.json (threads, decisions, state)
-  - Alpha bin: .claude/buffer/alpha/ (concept definitions, glossary)
-  - Git history: recoverable via tools
-- PRESERVE IN SUMMARY (context-only, not on disk):
-  - Active thread of work and current task state
-  - Decisions made since last save
-  - User preferences or corrections expressed this session
-  - Session vocabulary (terms with specific meaning coined this session)
-- End your summary with 1-2 sentences capturing exactly what was being
-  discussed in the most recent exchange — the immediate context the user
-  will expect to resume from.
-- Project glossary and concept definitions are in the alpha bin. Standard
-  project terms can be used without re-defining. Only preserve definitions
-  for terms coined THIS session.
-```
+     **⚠ MANDATORY POPUP** via AskUserQuestion:
+     - **Upgrade now** — "Found [N] lite alpha entries from [M] sources. These were indexed via Claude's native reading. The distill plugin can re-analyze them through full five-pass extraction for deeper concept mapping and convergence web linking. This takes ~2-5 minutes per source."
+     - **Upgrade later** — "Keep lite entries as-is. They work for basic sigma matching. You can upgrade anytime by running `/distill` on the original sources."
+     - **Never upgrade these** — "Mark these entries as lite-permanent. They won't be offered for upgrade again."
+
+     Wait for response.
+
+     - If **Upgrade now**: For each lite source, check the `source` field:
+       - If path exists → queue for distillation: "Ready to re-distill [N] sources. Run `/distill` to process them."
+       - If URL → note for fetch: "Source [label] is a URL — will fetch during distillation."
+       - If "ask user" → **⚠ MANDATORY POPUP**: "Where is the source document for [entry title]?"
+     - If **Upgrade later**: continue
+     - If **Never upgrade**: add `"lite_permanent": true` to each lite source entry in `alpha/index.json`
+
+   - **Lite entries found AND `buffer_mode` is `"lite"`**: note silently:
+     ```
+     Alpha: N lite entries across M sources (install distill plugin for full analysis)
+     ```
 
 During this session, if you coin or adopt a term with specific meaning
 (neologism, repurposed word, project-specific shorthand), add it to the
-Session Vocabulary section of compact-directives.md with a 1-sentence
-definition. Keep to ~5-10 entries. Standard technical vocabulary and terms
-already in the alpha bin don't belong here.
+Session Vocabulary section of compact-directives.md. Keep to ~5-10 entries.
 
-### Step 1: Read hot layer only
+### Present: Combine all results into one output
 
-Read `.claude/buffer/handoff.json` (~200 lines). This is the only mandatory read at startup.
+Present everything from batches 1+2 as a single unified reconstruction. Order:
 
-- If `schema_version` is missing or < 2, inform the user: "Found v1 sigma trunk. Run `/buffer:off` first to migrate to v2 format."
-
-### Step 1b: Alpha bin detection (Full + Alpha only)
-
-> If `buffer_mode` is `"full"` AND `alpha/index.json` exists: read `full-ref.md` and run the alpha detection protocol there. Otherwise skip to Step 1c.
-
-### Step 1c: Lite alpha upgrade detection
-
-> Runs after Step 1b. Checks if lite alpha entries exist that could be upgraded.
-
-If `alpha/index.json` exists, scan sources for any with `"mode": "lite"`:
-
-1. Count lite entries: sources where `mode` is `"lite"` in the alpha index
-2. **If zero lite entries**: skip to Step 2
-3. **If lite entries found AND `buffer_mode` is `"full"`**:
-
-   **⚠ MANDATORY POPUP** via AskUserQuestion:
-   - **Upgrade now** — "Found [N] lite alpha entries from [M] sources. These were indexed via Claude's native reading. The distill plugin can re-analyze them through full five-pass extraction for deeper concept mapping and convergence web linking. This takes ~2-5 minutes per source."
-   - **Upgrade later** — "Keep lite entries as-is. They work for basic sigma matching. You can upgrade anytime by running `/distill` on the original sources."
-   - **Never upgrade these** — "Mark these entries as lite-permanent. They won't be offered for upgrade again."
-
-   Wait for response.
-
-   - If **Upgrade now**: For each lite source, check the `source` field:
-     - If path exists → queue for distillation: "Ready to re-distill [N] sources. Run `/distill` to process them."
-     - If URL → note for fetch: "Source [label] is a URL — will fetch during distillation."
-     - If "ask user" → **⚠ MANDATORY POPUP**: "Where is the source document for [entry title]?"
-   - If **Upgrade later**: continue to Step 2
-   - If **Never upgrade**: add `"lite_permanent": true` to each lite source entry in `alpha/index.json`, continue to Step 2
-
-4. **If lite entries found AND `buffer_mode` is `"lite"`**: note silently:
-   ```
-   Alpha: N lite entries across M sources (install distill plugin for full analysis)
-   ```
-
-### Step 2: Git grounding
-
-Ground the session in actual repo state:
-
-```bash
-git log --oneline <session_meta.commit>..HEAD   # commits since last handoff
-git status                                       # current working tree
-git diff --stat                                  # uncommitted changes
+**1. Briefing** (if briefing.md existed):
 ```
+## Briefing from previous instance
+[contents of briefing.md — presented as-is, not summarized]
+```
+If no `briefing.md` but `.claude/buffer/beta/narrative.jsonl` exists, fall back:
+```bash
+buffer_manager.py beta-read --buffer-dir .claude/buffer/ --min-r 0.5 --limit 10
+```
+Present high-relevance entries as timeline narrative.
 
-Present the results:
+**2. Repo state** (from git grounding):
 ```
 ## Repo state
 **Sigma trunk recorded**: [commit] on [branch] ([date])
@@ -371,36 +325,9 @@ Present the results:
 **Commits since handoff**: [count] — [one-line summaries if any]
 **Working tree**: [clean / N modified files]
 ```
+Flag if commits/changes exist that aren't in the sigma trunk.
 
-If there are commits or changes not recorded in the sigma trunk, flag them — the trunk may be stale.
-
-### Step 2b: Read session briefing
-
-If `.claude/buffer/briefing.md` exists, read it and present its contents. This is the previous instance's colleague-to-colleague handoff — narrative context for how the last session developed. Present it before the structured state.
-
-```
-## Briefing from previous instance
-[contents of briefing.md — presented as-is, not summarized]
-```
-
-If no `briefing.md` exists but `.claude/buffer/beta/narrative.jsonl` does, fall back to the beta bin:
-
-```bash
-buffer_manager.py beta-read --buffer-dir .claude/buffer/ --min-r 0.5 --limit 10
-```
-
-Present the high-relevance entries as a timeline narrative:
-```
-## Session narrative (from beta bin)
-[entries formatted as: timestamp — text]
-```
-
-If neither exists, continue to Step 3 without narrative context.
-
-### Step 3: Present session state
-
-From the hot layer only:
-
+**3. Session state** (from hot layer):
 ```
 ## Last Session: [date]
 **Commit**: [hash] on [branch]
@@ -413,16 +340,10 @@ From the hot layer only:
 [natural_summary text]
 ```
 
-### Step 4-5: Pointer following + Full-scan (Full + Alpha only)
+**4. Pointer following + Full-scan** (Full + Alpha only):
+> If `buffer_mode` is `"full"` AND `alpha/index.json` exists: follow Steps 4-5 from `full-ref.md`. Otherwise skip.
 
-> If `buffer_mode` is `"full"` AND `alpha/index.json` exists: read `full-ref.md` and run Steps 4 and 5 from there. Otherwise skip to Step 6.
-
-### Step 6: Surface instance notes
-
-> In lite mode, instance notes are still present — surface them if they exist.
-
-If the hot layer has an `instance_notes` section, present it:
-
+**5. Instance notes** (if `instance_notes` exists in hot layer):
 ```
 ## Notes from the previous instance
 [remarks — paraphrased naturally, not as a JSON dump]
@@ -431,49 +352,42 @@ If the hot layer has an `instance_notes` section, present it:
 - [question 1]
 - [question 2]
 ```
+**Dialogue style adoption**: If `instance_notes.dialogue_style` exists, adopt that register silently.
 
-These questions are worth surfacing — the user may want to address them.
-
-**Dialogue style adoption**: If `instance_notes.dialogue_style` exists, read it and adopt that conversational register from your first response onward. Don't announce it ("I'll be casual now") — just *be* it. The goal is continuity: the user shouldn't feel a tonal shift between sessions.
-
-### Step 7: Read MEMORY.md
-
-Read the project memory file for baseline context. The sigma trunk is the session alpha stash; MEMORY.md is the project baseline.
-
-If the memory file path is not specified in a project skill, look for:
+**6. MEMORY.md**: Read the project memory file for baseline context. Look for:
 - `MEMORY.md` in the repo root
 - `.claude/MEMORY.md`
 - `~/.claude/projects/*/memory/MEMORY.md`
+(MEMORY.md is already loaded in context via system-reminder — skip re-reading if already visible.)
 
-### Step 8: Arm autosave and confirm
+### Arm autosave and confirm
 
 Compute the gap between today and `session_meta.date` from the hot layer.
 
-Tell the user:
-
+Write the sigma hook session marker:
+```bash
+echo "loaded" > .claude/buffer/.buffer_loaded
 ```
-buffer v3.6.0 | [scope] mode | Alpha: N referents (if present) | W: [ratio]
+
+Tell the user:
+```
+buffer v3.8.0 | [scope] mode | Alpha: N referents (if present) | W: [ratio]
 Context reconstructed from [date] handoff ([N days ago]). Ready to continue from [current_phase].
 Autosave armed — sigma trunk will stay current throughout the session.
 ```
 
 If the handoff is >7 days old, add: "Note: trunk is [N] days stale — git state may have diverged significantly."
 
-If `football_in_flight` is `true` in the hot layer, add after the confirmation line: "Note: a football is in flight (thrown [thrown_at date]). Run `/buffer:catch` when the worker returns."
-
-Write the sigma hook session marker so the hook skips redundant hot-layer hints (the AI already has the full hot layer loaded):
-```bash
-echo "loaded" > .claude/buffer/.buffer_loaded
-```
+If `football_in_flight` is `true` in the hot layer, add: "Note: a football is in flight (thrown [thrown_at date]). Run `/buffer:catch` when the worker returns."
 
 **⚠ MANDATORY POPUP**: You MUST present a priority check via `AskUserQuestion` before doing any work.
-Do NOT start working on the next action, even if you know what it is. Do NOT skip this popup. The user decides what comes first.
+Do NOT start working on the next action, even if you know what it is.
 
 `AskUserQuestion` options:
 - Proceed with [next_action or first open_thread]
 - Different priority (let user specify)
 
-Even if the reconstructed context makes the next step obvious, **stop and ask**. The user may have a different priority today than when the last handoff was written.
+Even if the reconstructed context makes the next step obvious, **stop and ask**.
 
 ---
 

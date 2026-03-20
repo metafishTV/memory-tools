@@ -2,6 +2,14 @@
 
 All notable changes to buffer are documented here.
 
+## [buffer 3.8.0] - 2026-03-19
+
+### Startup pipeline streamlining
+- **`discover` command** — new `buffer_manager.py` subcommand that replaces the manual multi-step project discovery in `/buffer:on` Step 0a. Single call reads registry, checks git, scans children, scores and ranks results. Returns structured JSON with routing recommendation. Eliminates 3+ manual Bash calls and Windows path format issues at session start.
+- **Parallel batch loading** — `/buffer:on` Standard On-Hand Process restructured into two parallel batches. Batch 1: hot layer + briefing + session marker (simultaneous). Batch 2: git grounding + compaction directives + CLAUDE.md update + alpha detection (simultaneous after hot layer loads). Replaces 8 sequential steps.
+- **Unified presentation** — all reconstruction results combined into a single output section instead of interleaved read-then-present steps.
+- **Step 0a+0b merged** — discover command output feeds directly into the mandatory project selector popup. No intermediate manual scoring or merging.
+
 ## [buffer 3.7.0 / distill 3.1.0] - 2026-03-19
 
 ### Managed rules deployment (both plugins)

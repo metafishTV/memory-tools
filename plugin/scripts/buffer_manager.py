@@ -3866,6 +3866,180 @@ def cmd_beta_purge(args):
 
 
 # ---------------------------------------------------------------------------
+# Discover — project routing for /buffer:on Step 0a
+# ---------------------------------------------------------------------------
+
+def cmd_discover(args):
+    """Discover available projects for /buffer:on routing.
+
+    Replaces the manual multi-step discovery in the skill with a single call.
+    Outputs structured JSON with everything the AI needs for the project selector.
+
+    Logic:
+    1. Registry lookup — match cwd to registered projects
+    2. Git check — is cwd itself a git repo?
+    3. Child scan — scan immediate children for git repos (if cwd isn't one)
+    4. Score and rank results
+    """
+    cwd = os.path.abspath(args.cwd or os.getcwd())
+
+    # Import buffer_utils for registry reading
+    try:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            'buffer_utils', os.path.join(script_dir, 'buffer_utils.py'))
+        utils = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(utils)
+        registry = utils.read_registry()
+    except Exception:
+        registry = {'schema_version': 2, 'projects': {}}
+
+    results = []
+    seen_roots = set()
+
+    # --- Tier 1: Registry matches ---
+    for name, proj in registry.get('projects', {}).items():
+        repo_root = proj.get('repo_root', '')
+        buffer_path = proj.get('buffer_path', '')
+        if not repo_root:
+            continue
+        # Match: cwd is inside repo_root, OR repo_root is inside cwd
+        norm_cwd = os.path.normcase(os.path.abspath(cwd))
+        norm_root = os.path.normcase(os.path.abspath(repo_root))
+        cwd_in_root = (norm_cwd == norm_root or
+                       norm_cwd.startswith(norm_root + os.sep))
+        root_in_cwd = (norm_root.startswith(norm_cwd + os.sep))
+        if not (cwd_in_root or root_in_cwd):
+            continue
+
+        has_handoff = os.path.isfile(os.path.join(buffer_path, 'handoff.json'))
+        has_git = os.path.isdir(os.path.join(repo_root, '.git'))
+        score = 0.0
+        if has_handoff:
+            score += 1.0
+        if has_git:
+            score += 0.5
+        score += 0.3  # registry match bonus
+
+        entry = {
+            'name': name,
+            'repo_root': repo_root,
+            'buffer_path': buffer_path,
+            'scope': proj.get('scope', 'unknown'),
+            'last_handoff': proj.get('last_handoff', ''),
+            'project_context': proj.get('project_context', ''),
+            'score': score,
+            'has_handoff': has_handoff,
+            'has_git': has_git,
+            'source': 'registry'
+        }
+        results.append(entry)
+        seen_roots.add(norm_root)
+
+    # --- Tier 2: cwd is a git repo? ---
+    cwd_is_git = os.path.isdir(os.path.join(cwd, '.git'))
+    if cwd_is_git and os.path.normcase(cwd) not in seen_roots:
+        buffer_path = os.path.join(cwd, '.claude', 'buffer')
+        has_handoff = os.path.isfile(os.path.join(buffer_path, 'handoff.json'))
+        score = 0.5  # has .git
+        if has_handoff:
+            score += 1.0
+        results.append({
+            'name': os.path.basename(cwd),
+            'repo_root': cwd,
+            'buffer_path': buffer_path,
+            'scope': 'unknown',
+            'last_handoff': '',
+            'project_context': '',
+            'score': score,
+            'has_handoff': has_handoff,
+            'has_git': True,
+            'source': 'cwd'
+        })
+        seen_roots.add(os.path.normcase(cwd))
+
+    # --- Tier 3: Scan immediate children for git repos ---
+    if not cwd_is_git:
+        try:
+            for child in os.listdir(cwd):
+                child_path = os.path.join(cwd, child)
+                if not os.path.isdir(child_path):
+                    continue
+                norm_child = os.path.normcase(os.path.abspath(child_path))
+                if norm_child in seen_roots:
+                    continue
+                if not os.path.isdir(os.path.join(child_path, '.git')):
+                    continue
+                buffer_path = os.path.join(child_path, '.claude', 'buffer')
+                has_handoff = os.path.isfile(
+                    os.path.join(buffer_path, 'handoff.json'))
+                score = 0.5  # has .git
+                if has_handoff:
+                    score += 1.0
+                # Check if it matches a registry entry
+                for _n, p in registry.get('projects', {}).items():
+                    rr = os.path.normcase(os.path.abspath(
+                        p.get('repo_root', '')))
+                    if rr == norm_child:
+                        score += 0.3
+                        break
+                results.append({
+                    'name': child,
+                    'repo_root': child_path,
+                    'buffer_path': buffer_path,
+                    'scope': 'unknown',
+                    'last_handoff': '',
+                    'project_context': '',
+                    'score': score,
+                    'has_handoff': has_handoff,
+                    'has_git': True,
+                    'source': 'child_scan'
+                })
+                seen_roots.add(norm_child)
+        except OSError:
+            pass
+
+    # Sort by score descending
+    results.sort(key=lambda x: x['score'], reverse=True)
+
+    # Determine routing recommendation
+    if not results and not registry.get('projects'):
+        routing = 'first_run'
+    elif not results:
+        # No local matches but registry has projects
+        routing = 'registry_only'
+        # Include all registry projects as options
+        for name, proj in registry.get('projects', {}).items():
+            results.append({
+                'name': name,
+                'repo_root': proj.get('repo_root', ''),
+                'buffer_path': proj.get('buffer_path', ''),
+                'scope': proj.get('scope', 'unknown'),
+                'last_handoff': proj.get('last_handoff', ''),
+                'project_context': proj.get('project_context', ''),
+                'score': 0.0,
+                'has_handoff': False,
+                'has_git': False,
+                'source': 'registry_remote'
+            })
+    elif results[0]['score'] >= 1.0:
+        routing = 'resume'
+    else:
+        routing = 'initialize'
+
+    output = {
+        'cwd': cwd,
+        'cwd_is_git': cwd_is_git,
+        'routing': routing,
+        'results': results,
+        'registry_project_count': len(registry.get('projects', {}))
+    }
+
+    print(json.dumps(output, indent=2))
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -4057,6 +4231,13 @@ def main():
     p_beta_purge.add_argument('--max-age', type=int, default=3,
                                help='Max age in days for purging old entries (default: 3)')
     p_beta_purge.set_defaults(func=cmd_beta_purge)
+
+    # --- discover ---
+    p_discover = subparsers.add_parser('discover',
+        help='Discover available projects for /buffer:on routing')
+    p_discover.add_argument('--cwd', default=None,
+                             help='Working directory to discover from (default: os.getcwd())')
+    p_discover.set_defaults(func=cmd_discover)
 
     args = parser.parse_args()
     if not args.command:
