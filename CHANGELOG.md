@@ -2,6 +2,14 @@
 
 All notable changes to buffer are documented here.
 
+## [buffer 3.8.3] - 2026-03-20
+
+### Football status: pending_actions replaces single-label routing
+- **`pending_actions` array** — `cmd_status()` now returns all actionable states simultaneously, not just the "winning" one. Fixes: returned balls hiding in-flight balls, in-flight balls hiding stale catches, etc. Values: `worker_in_progress`, `stale_catch`, `absorb`, `catch_available`.
+- **`/buffer:catch` full situation awareness** — skill reads `pending_actions` first. If multiple actions coexist (e.g., returned + in-flight), presents ALL to the user via mandatory popup before routing. Single actions route directly.
+- **`/buffer:throw` awareness** — skill mentions coexisting states (returned balls, in-flight balls) before routing, so nothing is silently hidden.
+- **`session_type` preserved** — still emitted for backward compatibility and simple routing, but skills should prefer `pending_actions`.
+
 ## [buffer 3.8.2] - 2026-03-20
 
 ### Model tier detection + adaptive scaling

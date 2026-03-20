@@ -19,15 +19,42 @@ Catches a football and acts. Behavior depends on ball state, detected automatica
 python <scripts>/buffer_football.py status
 ```
 
-Route based on `session_type` (derived from ball states, not trunk):
+The status output includes two key fields:
+- `session_type` — single label for the dominant state (legacy, still used for simple routing)
+- `pending_actions` — **array of ALL actionable states** (use this for complete awareness)
 
-| session_type | Meaning | Route |
-|---|---|---|
-| `"worker"` | Actively working on a caught ball (micro file exists) | Worker Catch Branch |
-| `"has_in_flight"` | Ball(s) in flight, available to catch | Worker Catch Branch |
-| `"planner"` | Ball(s) returned | Planner Absorb Branch |
-| `"stale_worker"` | Ball caught but no micro file | **Stale check**: "A football was caught but never worked on. Absorb partial progress?" If yes → Planner Absorb. If no → STOP. |
-| `"idle"` | No actionable balls | STOP: "No football in flight. Run /buffer:throw first." |
+### Full situation awareness (MANDATORY)
+
+Before routing, check `pending_actions` for the **complete picture**. Multiple actions can coexist:
+
+| pending_action | Meaning |
+|---|---|
+| `"worker_in_progress"` | Micro file exists — actively working on a caught ball |
+| `"stale_catch"` | Ball caught but no micro — orphaned |
+| `"absorb"` | Returned ball(s) ready for planner review |
+| `"catch_available"` | In-flight ball(s) available to catch |
+
+**If multiple actions are pending**, present ALL of them to the user before routing:
+
+> "Football status:
+> - [N] returned ball(s) ready to absorb: [list ball_ids]
+> - [N] in-flight ball(s) available to catch: [list ball_ids]
+> - [any stale catches]
+>
+> What do you want to handle?"
+
+Use `AskUserQuestion` and STOP. Wait for the user to choose.
+
+**If only one action is pending**, route directly:
+
+| Single pending_action | Route |
+|---|---|
+| `"worker_in_progress"` | Worker Catch Branch |
+| `"catch_available"` | Worker Catch Branch |
+| `"absorb"` | Planner Absorb Branch |
+| `"stale_catch"` | **Stale check**: "A football was caught but never worked on. Absorb partial progress?" If yes → Planner Absorb. If no → STOP. |
+
+**If `pending_actions` is empty** → STOP: "No football in flight. Run /buffer:throw first."
 
 ---
 

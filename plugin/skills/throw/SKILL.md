@@ -19,11 +19,15 @@ Packs and throws a football. Footballs live globally at `~/.claude/buffer/footba
 python <scripts>/buffer_football.py status
 ```
 
-- `"planner"` or `"idle"` → Planner Branch — you're throwing a new ball
-- `"worker"` → Worker Branch — you're returning results
-- `"stale_worker"` → **⚠ MANDATORY POPUP**: "A ball is caught but has no active worker. Absorb it first or discard?" Then route accordingly.
+Check `pending_actions` array for the full picture before routing:
 
-Check `in_flight` array to see if other balls are already out.
+- `"worker_in_progress"` in pending_actions → Worker Branch — you're returning results
+- `"absorb"` in pending_actions → **Mention** returned balls exist before proceeding ("Note: N returned ball(s) awaiting absorb"). Then route based on user intent.
+- `"stale_catch"` in pending_actions → **⚠ MANDATORY POPUP**: "A ball is caught but has no active worker. Absorb it first or discard?" Then route accordingly.
+- `"catch_available"` in pending_actions → **Mention** in-flight balls exist ("Note: N ball(s) already in flight"). Then proceed with throw if user wants.
+- No pending_actions or only `"idle"` session_type → Planner Branch — you're throwing a new ball
+
+**Fallback** (if `pending_actions` not in output): route on `session_type` — `"planner"` or `"idle"` → Planner Branch, `"worker"` → Worker Branch, `"has_in_flight"` → Planner Branch (mention existing in-flight balls).
 
 ---
 

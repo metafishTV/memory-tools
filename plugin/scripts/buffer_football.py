@@ -340,14 +340,25 @@ def cmd_status(args):
     elif returned:
         session_type = "planner"       # returned balls need planner review
     elif in_flight:
-        # In-flight balls are visible to ANY session — could be the planner
-        # who threw them or a new worker. Don't assume; let the skill route.
         session_type = "has_in_flight"
     else:
-        session_type = "idle"          # no actionable balls
+        session_type = "idle"
+
+    # Pending actions — every actionable state, not just the "winning" one.
+    # session_type collapses to one label; pending_actions shows the full picture.
+    pending_actions = []
+    if active_micros:
+        pending_actions.append("worker_in_progress")
+    if caught and not active_micros:
+        pending_actions.append("stale_catch")
+    if returned:
+        pending_actions.append("absorb")
+    if in_flight:
+        pending_actions.append("catch_available")
 
     result = {
         "session_type": session_type,
+        "pending_actions": pending_actions,
         "mode": "global",
         "ball_count": len(balls),
         "in_flight": in_flight,
