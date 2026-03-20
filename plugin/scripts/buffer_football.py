@@ -241,9 +241,8 @@ def cmd_status(args):
 
     if registry is None:
         # No footballs anywhere
-        has_trunk = bd and _hot(bd).exists()
         result = {
-            "session_type": "planner" if has_trunk else "unknown",
+            "session_type": "idle",
             "mode": "global",
             "ball_count": 0,
             "in_flight": [],
@@ -256,23 +255,13 @@ def cmd_status(args):
         print(json.dumps(result))
         return
 
-    has_trunk = bd and _hot(bd).exists()
     balls = registry.get("balls", {})
 
-    # Detect session type from micro files (global location)
+    # Detect active micro files (worker in progress)
     active_micros = []
     for ball_id in balls:
         if _ball_micro(ball_id).exists():
             active_micros.append(ball_id)
-
-    if has_trunk and active_micros:
-        session_type = "ambiguous"
-    elif has_trunk:
-        session_type = "planner"
-    elif active_micros:
-        session_type = "worker"
-    else:
-        session_type = "unknown"
 
     # Build per-ball status
     ball_states = {}
@@ -298,6 +287,19 @@ def cmd_status(args):
     in_flight = [bid for bid, s in ball_states.items() if s["state"] == "in_flight"]
     caught = [bid for bid, s in ball_states.items() if s["state"] == "caught"]
     returned = [bid for bid, s in ball_states.items() if s["state"] == "returned"]
+
+    # Session type from BALL STATE, not trunk presence.
+    # Trunk existence is irrelevant — every session on this machine can see it.
+    if active_micros:
+        session_type = "worker"        # actively working on a caught ball
+    elif returned:
+        session_type = "planner"       # balls came back, ready to absorb
+    elif in_flight:
+        session_type = "worker"        # balls available to catch
+    elif caught and not active_micros:
+        session_type = "stale_worker"  # caught but no micro — orphaned
+    else:
+        session_type = "idle"          # no actionable balls
 
     result = {
         "session_type": session_type,

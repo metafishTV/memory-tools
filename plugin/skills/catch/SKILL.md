@@ -19,15 +19,14 @@ Unpacks the football and acts. Behavior depends on the football's current state,
 python <scripts>/buffer_football.py status
 ```
 
-The output includes `mode` (`"legacy"` or `"multi-ball"`) and `session_type`. Route based on `session_type`:
+Route based on `session_type` (derived from ball states, not trunk):
 
-| session_type | Condition | Route |
+| session_type | Meaning | Route |
 |---|---|---|
-| `"worker"` | Ball(s) in_flight | Worker Catch Branch |
+| `"worker"` | Ball(s) in_flight or actively caught | Worker Catch Branch |
 | `"planner"` | Ball(s) returned | Planner Absorb Branch |
-| `"planner"` | Ball(s) caught but stale (3+ days) | **Stale check**: "A football was caught on [date] but never returned. Absorb partial progress?" If yes → Planner Absorb. If no → STOP. |
-| `"ambiguous"` | Both trunk and micro detected | **⚠ MANDATORY POPUP**: "Both trunk and micro-hot-layer detected. Are you the planner or the worker?" Route accordingly. |
-| `"unknown"` / no balls | Nothing found | STOP: "No football found. Ask the planner to run /buffer:throw first." |
+| `"stale_worker"` | Ball caught but no micro file | **Stale check**: "A football was caught but never worked on. Absorb partial progress?" If yes → Planner Absorb. If no → STOP. |
+| `"idle"` | No actionable balls | STOP: "No football in flight. Run /buffer:throw first." |
 
 Check `in_flight`, `caught`, `returned` arrays and `stale_balls` in the status output.
 

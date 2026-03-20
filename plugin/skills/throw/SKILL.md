@@ -19,10 +19,9 @@ Packs the football for the other session to catch. Behavior depends on session t
 python <scripts>/buffer_football.py status
 ```
 
-- `"planner"` → Planner Branch (Steps 2P–7P)
-- `"worker"` → Worker Branch (Steps 2W–5W)
-- `"ambiguous"` → **⚠ MANDATORY POPUP** via `AskUserQuestion`: "Both trunk and micro-hot-layer detected. Are you the planner or the worker?" If planner, offer to absorb the stale micro-hot-layer before proceeding.
-- `"unknown"` → STOP: "No buffer found. Run /buffer:on or /buffer:catch first."
+- `"planner"` or `"idle"` → Planner Branch (Steps 2P–7P) — you're throwing a new ball
+- `"worker"` → Worker Branch (Steps 2W–5W) — you're returning results
+- `"stale_worker"` → **⚠ MANDATORY POPUP**: "A ball is caught but has no active worker. Absorb it first or discard?" Then route accordingly.
 
 Check `in_flight` array in status output to see if other balls are already out.
 
