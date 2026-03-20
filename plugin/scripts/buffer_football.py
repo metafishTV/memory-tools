@@ -121,9 +121,12 @@ def _read_registry():
     if balls_dir.exists():
         disk_balls = {}
         for f in balls_dir.iterdir():
-            if f.suffix == '.json' and not f.name.startswith('micro-'):
-                ball_id = f.stem
-                disk_balls[ball_id] = f
+            # Skip micro files (current: micro-*, legacy: football-micro-*)
+            if f.suffix != '.json':
+                continue
+            if f.name.startswith('micro-') or f.name.startswith('football-micro-'):
+                continue
+            disk_balls[f.stem] = f
 
         if disk_balls:
             registry_balls = registry.get("balls", {}) if registry else {}
@@ -132,6 +135,7 @@ def _read_registry():
             if missing:
                 if registry is None:
                     registry = {"schema_version": 1, "balls": {}}
+                healed = []
                 for ball_id in missing:
                     data = _read_json(disk_balls[ball_id])
                     if data and data.get("mode") == "football":
@@ -141,10 +145,11 @@ def _read_registry():
                             "thrown_at": data.get("thrown_at", ""),
                             "project_root": data.get("project_root", ""),
                         }
-                if missing:
+                        healed.append(ball_id)
+                if healed:
                     _write_registry(registry)
-                    print(f"Registry self-healed: added {len(missing)} ball(s) "
-                          f"from disk ({', '.join(sorted(missing))})",
+                    print(f"Registry self-healed: added {len(healed)} ball(s) "
+                          f"from disk ({', '.join(sorted(healed))})",
                           file=sys.stderr)
 
     return registry
