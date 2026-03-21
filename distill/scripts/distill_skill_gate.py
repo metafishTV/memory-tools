@@ -10,7 +10,7 @@ This hook NEVER blocks — it only writes the marker as a side effect.
 If the project is not initialized (no SKILL.md), no marker is written
 (first_run_gate.py handles blocking).
 
-Input (stdin):  {"tool_name": "Skill", "tool_params": {"skill": "..."}, "cwd": "..."}
+Input (stdin):  {"tool_name": "Skill", "tool_input": {"skill": "..."}, "cwd": "..."}
 Output (stdout): {} (always allow)
 """
 
@@ -71,7 +71,7 @@ def main():
         print(ALLOW)
         return
 
-    skill = data.get('tool_params', {}).get('skill', '')
+    skill = data.get('tool_input', {}).get('skill', '')
 
     if not skill.startswith('distill:') and skill != 'distill':
         print(ALLOW)

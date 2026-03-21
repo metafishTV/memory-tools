@@ -2,6 +2,11 @@
 
 All notable changes are documented here.
 
+## [distill 3.2.2] - 2026-03-20
+
+### Skill invocation gate fix
+- **`distill_skill_gate.py`** — Fixed `tool_params` → `tool_input` on line 74. The Claude Code hook protocol sends `tool_input`, not `tool_params`. This caused the `SKILL_INVOKED:` marker to never be written, which meant the write guard (`distill_write_guard.py`) always blocked distillation/interpretation writes. The gate now correctly reads the skill name from the hook input and writes the marker.
+
 ## [distill 3.2.1] - 2026-03-20
 
 ### Cross-plugin script discovery
